@@ -62,7 +62,9 @@ class DailyMetrics(Base):
     unified_rhr_z: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     unified_sleep_z: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
 
-    ingestion_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    ingestion_complete: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), default=False
+    )
     oura_status: Mapped[Optional[str]] = mapped_column(Text)
     whoop_status: Mapped[Optional[str]] = mapped_column(Text)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
