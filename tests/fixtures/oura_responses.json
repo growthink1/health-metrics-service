@@ -1,0 +1,57 @@
+{
+  "2026-05-12": {
+    "daily_sleep": {
+      "data": [
+        {
+          "id": "ds-2026-05-12",
+          "day": "2026-05-12",
+          "score": 78,
+          "timestamp": "2026-05-12T08:00:00+00:00"
+        }
+      ],
+      "next_token": null
+    },
+    "sleep": {
+      "data": [
+        {
+          "id": "s-2026-05-12-main",
+          "day": "2026-05-12",
+          "bedtime_start": "2026-05-11T23:30:00-04:00",
+          "bedtime_end": "2026-05-12T07:15:00-04:00",
+          "total_sleep_duration": 24720,
+          "awake_time": 1080,
+          "rem_sleep_duration": 5040,
+          "deep_sleep_duration": 4200,
+          "light_sleep_duration": 15480,
+          "efficiency": 89.2,
+          "latency": 540,
+          "average_hrv": 45,
+          "lowest_heart_rate": 58,
+          "type": "long_sleep"
+        }
+      ],
+      "next_token": null
+    },
+    "daily_readiness": {
+      "data": [
+        {
+          "id": "dr-2026-05-12",
+          "day": "2026-05-12",
+          "score": 72,
+          "temperature_deviation": 0.3
+        }
+      ],
+      "next_token": null
+    },
+    "daily_activity": {
+      "data": [
+        {
+          "id": "da-2026-05-12",
+          "day": "2026-05-12",
+          "score": 81
+        }
+      ],
+      "next_token": null
+    }
+  }
+}
