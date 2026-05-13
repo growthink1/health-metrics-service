@@ -114,7 +114,6 @@ dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.6.0",
     "pydantic-settings>=2.2.0",
-    "python-dotenv>=1.0.0",
     "structlog>=24.1.0",
     "apscheduler>=3.10.4",
     "tzdata>=2024.1",
@@ -138,7 +137,12 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "ASYNC"]
 ```
+
+> Note: `pydantic-settings` loads `.env` natively — no separate `python-dotenv` dependency is needed, and `main.py` does NOT call `load_dotenv()`.
 
 - [ ] **Step 1.2: Write `.gitignore`**
 
@@ -248,7 +252,7 @@ services:
       POSTGRES_PASSWORD: hms_dev_password
       POSTGRES_DB: health_metrics
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - hms_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -260,6 +264,8 @@ services:
 volumes:
   hms_pgdata:
 ```
+
+> Port `5433` (not 5432) — Hugo's machine already runs a system Postgres on 5432. The container still listens on 5432 internally; only the host-side port is remapped.
 
 - [ ] **Step 2.2: Create local `.env` (copy of .env.example with real DATABASE_URL)**
 
@@ -451,13 +457,10 @@ async def health() -> dict[str, str]:
 import sys
 
 import structlog
-from dotenv import load_dotenv
 from fastapi import FastAPI
 
-load_dotenv()
-
-from .config import get_settings  # noqa: E402
-from .routes import health as health_route  # noqa: E402
+from .config import get_settings
+from .routes import health as health_route
 
 
 def configure_logging(log_level: str) -> None:

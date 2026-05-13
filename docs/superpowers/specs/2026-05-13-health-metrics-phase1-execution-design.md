@@ -37,7 +37,7 @@
 
 - `pyproject.toml` with `hatchling` build backend
 - structlog configured to stderr — ConsoleRenderer when tty, JSONRenderer when not
-- `pydantic-settings` for config, env-prefix `HMS_` (vs `MCP_` for the unified server)
+- `pydantic-settings` for config, no env prefix (matches Railway convention — env vars are unprefixed like `DATABASE_URL`, `OURA_PERSONAL_TOKEN`)
 - `Dockerfile` + `railway.toml` (NIXPACKS), `Procfile` for `web:` line
 - Tools/modules expose async `execute()` style for MCP layer (relevant Step 8+; not Phase 1)
 
