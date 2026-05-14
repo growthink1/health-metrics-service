@@ -1,6 +1,7 @@
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -122,3 +123,45 @@ async def test_whoop_client_refreshes_on_401():
     assert client.refresh_token == "new-refresh"
     assert refreshed_tokens["access"] == "new-access"
     assert refreshed_tokens["refresh"] == "new-refresh"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_whoop_partial_failure_recovers_remaining_endpoints():
+    """If one endpoint 404s, the others still produce data."""
+    respx.get("https://api.prod.whoop.com/developer/v1/cycle").mock(
+        return_value=httpx.Response(200, json={"records": [{
+            "id": 999, "user_id": 1, "start": "2026-05-13T07:00:00.000Z",
+            "end": "2026-05-14T07:00:00.000Z", "timezone_offset": "-04:00",
+            "score_state": "SCORED",
+            "score": {"strain": 11.5, "kilojoule": 8000.0, "average_heart_rate": 88, "max_heart_rate": 150},
+        }], "next_token": None})
+    )
+    respx.get("https://api.prod.whoop.com/developer/v1/recovery").mock(
+        return_value=httpx.Response(404, text="HTTP 404 Not Found")
+    )
+    respx.get("https://api.prod.whoop.com/developer/v1/activity/sleep").mock(
+        return_value=httpx.Response(200, json={"records": [], "next_token": None})
+    )
+    respx.get("https://api.prod.whoop.com/developer/v1/activity/workout").mock(
+        return_value=httpx.Response(200, json={"records": [], "next_token": None})
+    )
+
+    client = WhoopClient(
+        access_token="test-access",
+        refresh_token="test-refresh",
+        client_id="cid",
+        client_secret="csec",
+    )
+    day_payload, workouts = await client.fetch_day(date(2026, 5, 13))
+    await client.close()
+
+    # Cycle worked → day_strain populated
+    assert day_payload.day_strain == 11.5
+    assert day_payload.avg_hr == 88
+    # Recovery 404'd → recovery_score is None
+    assert day_payload.recovery_score is None
+    assert day_payload.hrv_ms is None
+    # Sleep/workout empty (not failed) → all None
+    assert day_payload.sleep_performance is None
+    assert len(workouts) == 0

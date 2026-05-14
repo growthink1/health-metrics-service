@@ -94,7 +94,6 @@ class WhoopClient:
             "refresh_token": self._refresh_token,
             "client_id": self._client_id,
             "client_secret": self._client_secret,
-            "scope": "offline",
         }
         resp = await self._http.post(self._oauth_url, data=data)
         resp.raise_for_status()
@@ -125,10 +124,22 @@ class WhoopClient:
         end = f"{day.isoformat()}T23:59:59.999Z"
         params = {"start": start, "end": end}
 
-        cycle = await self._get("cycle", params)
-        recovery = await self._get("recovery", params)
-        sleep = await self._get("activity/sleep", params)
-        workout = await self._get("activity/workout", params)
+        async def _safe_get(path: str) -> dict[str, Any]:
+            try:
+                return await self._get(path, params)
+            except httpx.HTTPStatusError as e:
+                log.warning(
+                    "whoop_endpoint_failed",
+                    path=path,
+                    day=day.isoformat(),
+                    status=e.response.status_code,
+                )
+                return {"records": []}
+
+        cycle = await _safe_get("cycle")
+        recovery = await _safe_get("recovery")
+        sleep = await _safe_get("activity/sleep")
+        workout = await _safe_get("activity/workout")
 
         cycle_rec = _first_record(cycle)
         rec_rec = _first_record(recovery)
