@@ -5,7 +5,13 @@ logic". Conservative bias — when ambiguous, prefer the safer recommendation.
 """
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Literal
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .models import DailyMetrics, ManualLog
 
 
 @dataclass
@@ -108,4 +114,76 @@ def regulate(s: RegulationSignals) -> tuple[RecType, list[str], dict]:
         "deficit_conservative",
         rationale,
         {"kcal": 2500, "training": "Full program, monitor closely"},
+    )
+
+
+async def compute_regulation_signals(
+    session: AsyncSession, user_id: str, anchor: date
+) -> RegulationSignals:
+    """Pull last-3-day daily_metrics + manual_log, aggregate into RegulationSignals."""
+    window_start = anchor - timedelta(days=2)  # anchor + 2 prior = 3 days
+
+    # daily_metrics for last 3 days
+    res = await session.execute(
+        select(DailyMetrics)
+        .where(DailyMetrics.user_id == user_id)
+        .where(DailyMetrics.metric_date >= window_start)
+        .where(DailyMetrics.metric_date <= anchor)
+        .order_by(DailyMetrics.metric_date.asc())
+    )
+    dm_rows = list(res.scalars().all())
+
+    # manual_log for last 3 days
+    res = await session.execute(
+        select(ManualLog)
+        .where(ManualLog.user_id == user_id)
+        .where(ManualLog.log_date >= window_start)
+        .where(ManualLog.log_date <= anchor)
+        .order_by(ManualLog.log_date.asc())
+    )
+    ml_rows = list(res.scalars().all())
+
+    # 7-day strain window
+    strain_start = anchor - timedelta(days=6)
+    res = await session.execute(
+        select(DailyMetrics)
+        .where(DailyMetrics.user_id == user_id)
+        .where(DailyMetrics.metric_date >= strain_start)
+        .where(DailyMetrics.metric_date <= anchor)
+    )
+    strain_rows = list(res.scalars().all())
+
+    def _avg(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    hrv_zs = [float(r.unified_hrv_z) for r in dm_rows if r.unified_hrv_z is not None]
+    rhr_zs = [float(r.unified_rhr_z) for r in dm_rows if r.unified_rhr_z is not None]
+    sleep_mins = [
+        float(r.oura_sleep_duration_min)
+        for r in dm_rows
+        if r.oura_sleep_duration_min is not None
+    ]
+    sleep_debts = [
+        float(r.whoop_sleep_debt_min)
+        for r in dm_rows
+        if r.whoop_sleep_debt_min is not None
+    ]
+    strain_total = sum(
+        float(r.whoop_day_strain) for r in strain_rows if r.whoop_day_strain is not None
+    )
+
+    energies = [
+        float(r.subjective_energy)
+        for r in ml_rows
+        if r.subjective_energy is not None
+    ]
+
+    return RegulationSignals(
+        hrv_z_3d=_avg(hrv_zs),
+        rhr_z_3d=_avg(rhr_zs),
+        sleep_3d_min=_avg(sleep_mins) if sleep_mins else 0.0,
+        sleep_debt_min=_avg(sleep_debts) if sleep_debts else 0.0,
+        strain_7d_total=strain_total,
+        subjective_3d_energy=_avg(energies) if energies else None,
+        days_with_complete_data=sum(1 for r in dm_rows if r.ingestion_complete),
     )
