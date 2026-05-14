@@ -6,7 +6,7 @@ import structlog
 from fastapi import FastAPI
 
 from .config import get_settings
-from .routes import health as health_route
+from .routes import health as health_route, ingest as ingest_route
 
 
 def configure_logging(log_level: str) -> None:
@@ -34,5 +34,6 @@ log = structlog.get_logger()
 
 app = FastAPI(title="health-metrics-service", version="0.1.0")
 app.include_router(health_route.router)
+app.include_router(ingest_route.router)
 
 log.info("app_initialized", version="0.1.0", user_id=settings.user_id)
