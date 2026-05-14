@@ -7,8 +7,10 @@ from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel, Field as PydField
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -277,4 +279,69 @@ async def metric_drilldown(
             "lower_1sd": round(mean - std, 2),
             "upper_1sd": round(mean + std, 2),
         },
+    }
+
+
+class ManualLogPayload(BaseModel):
+    user_id: str | None = None
+    date: str  # ISO date
+    subjective_energy: int | None = PydField(default=None, ge=1, le=10)
+    subjective_mood: int | None = PydField(default=None, ge=1, le=10)
+    subjective_hunger: int | None = PydField(default=None, ge=1, le=10)
+    weight_lbs: float | None = PydField(default=None, ge=50, le=500)
+    kcal_consumed: int | None = PydField(default=None, ge=0, le=10000)
+    protein_g: int | None = PydField(default=None, ge=0, le=1000)
+    fat_g: int | None = PydField(default=None, ge=0, le=1000)
+    carbs_g: int | None = PydField(default=None, ge=0, le=2000)
+    notes: str | None = None
+
+
+@router.post("/manual-log")
+async def manual_log(payload: ManualLogPayload = Body(...)) -> dict[str, Any]:
+    settings = get_settings()
+    uid = payload.user_id or settings.user_id
+    try:
+        log_date = date_type.fromisoformat(payload.date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid date: {e}")
+
+    fields = payload.model_dump(exclude_none=True, exclude={"user_id", "date"})
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    fields_updated = list(fields.keys())
+
+    async with _session_factory() as session:
+        stmt = pg_insert(ManualLog).values(user_id=uid, log_date=log_date, **fields)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "log_date"], set_=fields
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+        res = await session.execute(
+            select(ManualLog).where(
+                ManualLog.user_id == uid, ManualLog.log_date == log_date
+            )
+        )
+        row = res.scalar_one()
+
+    completeness = {
+        "subjective": all([
+            row.subjective_energy is not None,
+            row.subjective_mood is not None,
+            row.subjective_hunger is not None,
+        ]),
+        "weight": row.weight_lbs is not None,
+        "nutrition": row.kcal_consumed is not None,
+    }
+    next_required = []
+    if not completeness["subjective"]:
+        next_required.extend(["subjective_energy", "subjective_mood", "subjective_hunger"])
+
+    return {
+        "logged_date": log_date.isoformat(),
+        "fields_updated": fields_updated,
+        "completeness": completeness,
+        "next_required_inputs": next_required,
     }
