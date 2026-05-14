@@ -1,0 +1,1744 @@
+# Dashboard Backend — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add 5 dashboard REST endpoints + the Anthropic-powered narration helper to `health-metrics-service`. This is the API that the Next.js dashboard (Plan 2) consumes.
+
+**Architecture:** All work lives in `~/code/health-metrics-service` on `main`. New module files under `src/health_metrics/`. One Alembic migration for the `narration_cache` table. All endpoints async, all queries via the existing async SQLAlchemy session. Anthropic calls go through the official `anthropic` Python SDK. Content-addressed cache for narration (SHA256 of canonical regulation-signal JSON) — no time-based expiry.
+
+**Tech Stack:** Existing FastAPI + async SQLAlchemy + asyncpg + pytest stack. New deps: `anthropic` SDK. New table: `narration_cache`.
+
+**Spec reference:** `docs/superpowers/specs/2026-05-14-health-metrics-dashboard-design.md` §"Data flow & backend endpoints" and §"Claude narration mechanism".
+
+**Phase 1 backend status:** 20/20 tests passing. HEAD `b723fc1`. Whoop re-bootstrap is concurrent with this work; verification of live ingest can happen anytime.
+
+---
+
+## File structure
+
+```
+~/code/health-metrics-service/
+├── alembic/versions/
+│   └── <hash>_narration_cache.py          # NEW migration
+├── src/health_metrics/
+│   ├── models.py                          # MODIFY: add NarrationCache model
+│   ├── regulation.py                      # NEW: deterministic rule logic
+│   ├── narration.py                       # NEW: Anthropic call + cache
+│   ├── config.py                          # MODIFY: add anthropic_api_key + cors_allowed_origins settings
+│   ├── main.py                            # MODIFY: add CORS middleware + register api router
+│   └── routes/
+│       └── api.py                         # NEW: 5 dashboard endpoints
+└── tests/
+    ├── test_regulation.py                 # NEW
+    ├── test_narration.py                  # NEW (mocks Anthropic)
+    ├── test_api_dashboard_today.py        # NEW
+    ├── test_api_dashboard_grid.py         # NEW
+    ├── test_api_metric.py                 # NEW
+    ├── test_api_manual_log.py             # NEW
+    └── test_api_workouts.py               # NEW
+```
+
+Each task is self-contained: failing test → implementation → passing test → commit. All tests use the existing `db_session` rollback fixture from `tests/conftest.py`.
+
+---
+
+## Task 1: Add Anthropic SDK dep + config settings
+
+**Files:**
+- Modify: `pyproject.toml`
+- Modify: `src/health_metrics/config.py`
+- Modify: `.env.example`
+- Test: `tests/test_config.py` (update)
+
+- [ ] **Step 1.1: Add `anthropic` to pyproject.toml dependencies**
+
+Insert into `[project] dependencies` (after `apscheduler`, before `tzdata`):
+
+```
+    "anthropic>=0.34.0",
+```
+
+- [ ] **Step 1.2: Add new settings to `src/health_metrics/config.py`**
+
+Below the existing `whoop_oauth_url` field, add:
+
+```python
+    # Anthropic (dashboard narration)
+    anthropic_api_key: Optional[str] = Field(default=None)
+    narration_model: str = Field(default="claude-3-5-haiku-latest")
+    narration_max_tokens: int = Field(default=80)
+
+    # CORS (dashboard frontend)
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3000"]
+    )
+```
+
+- [ ] **Step 1.3: Append new env keys to `.env.example`**
+
+```
+# Anthropic (dashboard narration)
+ANTHROPIC_API_KEY=
+
+# CORS (dashboard frontend)
+# Comma-separated list; pydantic-settings parses with JSON-list semantics, so
+# use ["https://example.com","https://example2.com"] in production .env
+CORS_ALLOWED_ORIGINS=["http://localhost:3000"]
+```
+
+- [ ] **Step 1.4: Install + verify**
+
+```bash
+cd ~/code/health-metrics-service
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+python -c "from health_metrics.config import get_settings; print(get_settings().narration_model)"
+```
+
+Expected: `claude-3-5-haiku-latest`.
+
+- [ ] **Step 1.5: Update `tests/test_config.py` to cover the new defaults**
+
+Append:
+
+```python
+def test_settings_anthropic_defaults(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.narration_model == "claude-3-5-haiku-latest"
+    assert s.narration_max_tokens == 80
+    assert s.cors_allowed_origins == ["http://localhost:3000"]
+```
+
+Run: `pytest tests/test_config.py -v` → expect 3 passed.
+
+- [ ] **Step 1.6: Commit**
+
+```bash
+git add pyproject.toml src/health_metrics/config.py .env.example tests/test_config.py
+git commit -m "feat: add anthropic SDK dep + narration/CORS config"
+```
+
+---
+
+## Task 2: Migration — narration_cache table
+
+**Files:**
+- Modify: `src/health_metrics/models.py`
+- Create: `alembic/versions/<hash>_narration_cache.py` (autogenerated, may need light edits)
+
+- [ ] **Step 2.1: Add `NarrationCache` to `src/health_metrics/models.py`**
+
+Append at the end of the file (after `OAuthState`):
+
+```python
+class NarrationCache(Base):
+    """Content-addressed cache of Claude-generated narration sentences.
+
+    Keyed on (user_id, metric_date, signals_hash). The signals_hash is
+    SHA256 of the canonical JSON of the regulation signals payload — so
+    if signals don't change, the cached narration is reused indefinitely.
+    """
+
+    __tablename__ = "narration_cache"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    signals_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    narration_text: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("NOW()")
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "metric_date", "signals_hash",
+            name="uq_narration_cache_user_date_hash",
+        ),
+    )
+```
+
+- [ ] **Step 2.2: Autogenerate the migration**
+
+```bash
+cd ~/code/health-metrics-service
+source .venv/bin/activate
+docker compose up -d postgres  # if not running
+alembic revision --autogenerate -m "narration_cache table"
+```
+
+Open the generated file under `alembic/versions/*_narration_cache.py`. Verify it has a `create_table('narration_cache', ...)` op with all 7 columns + the unique constraint. If the unique constraint name doesn't match `uq_narration_cache_user_date_hash`, hand-edit to match.
+
+- [ ] **Step 2.3: Apply + verify**
+
+```bash
+alembic upgrade head
+docker exec hms-postgres psql -U hms -d health_metrics -c "\d narration_cache"
+```
+
+Expected: shows the 7 columns + unique constraint.
+
+- [ ] **Step 2.4: Verify metadata test still passes**
+
+Add a check to `tests/test_models_migration.py`:
+
+```python
+def test_narration_cache_unique_constraint():
+    t = Base.metadata.tables["narration_cache"]
+    uqs = {c.name for c in t.constraints if c.__class__.__name__ == "UniqueConstraint"}
+    assert "uq_narration_cache_user_date_hash" in uqs
+```
+
+Update `test_all_expected_tables_registered` expected set:
+
+```python
+def test_all_expected_tables_registered():
+    tables = {t.name for t in Base.metadata.sorted_tables}
+    assert tables == {
+        "daily_metrics",
+        "workouts",
+        "manual_log",
+        "regulation_recommendations",
+        "oauth_state",
+        "narration_cache",
+    }
+```
+
+Run: `pytest tests/test_models_migration.py -v` → 4 passed.
+
+- [ ] **Step 2.5: Commit**
+
+```bash
+git add src/health_metrics/models.py alembic/versions/*_narration_cache.py tests/test_models_migration.py
+git commit -m "feat: narration_cache table + migration"
+```
+
+---
+
+## Task 3: Auto-regulation logic — port from master spec
+
+**Files:**
+- Create: `src/health_metrics/regulation.py`
+- Test: `tests/test_regulation.py`
+
+This is the deterministic rule layer the master spec §"Auto-regulation logic" describes.
+
+- [ ] **Step 3.1: Write failing test `tests/test_regulation.py`**
+
+```python
+from health_metrics.regulation import RegulationSignals, regulate
+
+
+def test_severe_sleep_deprivation_triggers_deload():
+    s = RegulationSignals(
+        hrv_z_3d=0.0, rhr_z_3d=0.0, sleep_3d_min=280,
+        sleep_debt_min=600, strain_7d_total=70,
+        subjective_3d_energy=6, days_with_complete_data=3,
+    )
+    rec, rationale, payload = regulate(s)
+    assert rec == "deload"
+    assert payload["kcal"] == 2800
+
+
+def test_subjective_energy_collapse_triggers_deload():
+    s = RegulationSignals(
+        hrv_z_3d=0.0, rhr_z_3d=0.0, sleep_3d_min=420,
+        sleep_debt_min=120, strain_7d_total=70,
+        subjective_3d_energy=3.5, days_with_complete_data=3,
+    )
+    rec, _, _ = regulate(s)
+    assert rec == "deload"
+
+
+def test_mild_recovery_compromise_returns_maintenance():
+    s = RegulationSignals(
+        hrv_z_3d=-0.6, rhr_z_3d=0.4, sleep_3d_min=380,
+        sleep_debt_min=120, strain_7d_total=70,
+        subjective_3d_energy=6, days_with_complete_data=3,
+    )
+    rec, _, _ = regulate(s)
+    assert rec == "maintenance"
+
+
+def test_high_7d_strain_triggers_deficit_conservative():
+    s = RegulationSignals(
+        hrv_z_3d=0.0, rhr_z_3d=0.0, sleep_3d_min=420,
+        sleep_debt_min=60, strain_7d_total=110,  # 110/7 = 15.7/day, > 15 threshold
+        subjective_3d_energy=7, days_with_complete_data=3,
+    )
+    rec, _, payload = regulate(s)
+    assert rec == "deficit_conservative"
+    assert payload["kcal"] == 2500
+
+
+def test_all_green_returns_deficit():
+    s = RegulationSignals(
+        hrv_z_3d=0.4, rhr_z_3d=-0.2, sleep_3d_min=450,
+        sleep_debt_min=0, strain_7d_total=70,  # 70/7 = 10/day, < 13
+        subjective_3d_energy=8, days_with_complete_data=3,
+    )
+    rec, _, payload = regulate(s)
+    assert rec == "deficit"
+    assert payload["kcal"] == 2300
+
+
+def test_subjective_none_does_not_trigger_collapse():
+    s = RegulationSignals(
+        hrv_z_3d=0.0, rhr_z_3d=0.0, sleep_3d_min=420,
+        sleep_debt_min=60, strain_7d_total=80,
+        subjective_3d_energy=None, days_with_complete_data=2,
+    )
+    rec, _, _ = regulate(s)
+    # No subjective → should not return deload from energy-collapse branch
+    assert rec != "deload" or "Subjective" not in (rec or "")
+```
+
+Run: `pytest tests/test_regulation.py -v` → 6 errors (ImportError).
+
+- [ ] **Step 3.2: Write `src/health_metrics/regulation.py`**
+
+```python
+"""Auto-regulation decision rules.
+
+Mirrors the deterministic decision tree from docs/spec.md §"Auto-regulation
+logic". Conservative bias — when ambiguous, prefer the safer recommendation.
+"""
+
+from dataclasses import dataclass
+from typing import Literal
+
+
+@dataclass
+class RegulationSignals:
+    hrv_z_3d: float                       # avg z-score over last 3 days vs 14d baseline
+    rhr_z_3d: float
+    sleep_3d_min: float                   # avg minutes over last 3 days
+    sleep_debt_min: float                 # from Whoop (positive = behind)
+    strain_7d_total: float
+    subjective_3d_energy: float | None    # 1-10, None if missing
+    days_with_complete_data: int          # of last 3, how many ingestion_complete
+
+
+RecType = Literal["deficit", "deficit_conservative", "maintenance", "deload"]
+
+
+def regulate(s: RegulationSignals) -> tuple[RecType, list[str], dict]:
+    """Return (recommendation, rationale_list, action_payload)."""
+    rationale: list[str] = []
+
+    recovery_score = (
+        -0.50 * s.hrv_z_3d
+        - 0.30 * s.rhr_z_3d
+        + 0.40 * ((s.sleep_3d_min - 360) / 60)
+    )
+
+    # Hard floor: severe sleep deprivation
+    if s.sleep_3d_min < 300:
+        rationale.append(f"Severe sleep debt: {s.sleep_3d_min / 60:.1f}h avg over 3d")
+        return (
+            "deload",
+            rationale,
+            {"kcal": 2800, "training": "Volume -30%, Z2 only, extra rest day"},
+        )
+
+    # Hard floor: subjective collapse (if logged)
+    if s.subjective_3d_energy is not None and s.subjective_3d_energy < 4:
+        rationale.append(
+            f"Subjective energy collapsed: {s.subjective_3d_energy:.1f}/10"
+        )
+        return (
+            "deload",
+            rationale,
+            {"kcal": 2800, "training": "Volume -30%, Z2 only, extra rest day"},
+        )
+
+    # Severe recovery + sleep compromise
+    if recovery_score < -1.0 and s.sleep_3d_min < 360:
+        rationale.append(
+            f"Recovery composite {recovery_score:.2f} + sleep {s.sleep_3d_min / 60:.1f}h"
+        )
+        return (
+            "deload",
+            rationale,
+            {"kcal": 2800, "training": "Volume -30%, swap HIIT for Z2"},
+        )
+
+    # Mild recovery compromise — pause deficit, train normally
+    if recovery_score < -0.5 or s.sleep_3d_min < 390:
+        rationale.append(
+            f"Recovery markers depressed (score {recovery_score:.2f}, "
+            f"sleep {s.sleep_3d_min / 60:.1f}h)"
+        )
+        return (
+            "maintenance",
+            rationale,
+            {"kcal": 2800, "training": "Full program, no progression push"},
+        )
+
+    # Excessive strain accumulation
+    if s.strain_7d_total / 7 > 15:
+        rationale.append(
+            f"7d strain load high: {s.strain_7d_total:.1f} "
+            f"({s.strain_7d_total / 7:.1f}/day avg)"
+        )
+        return (
+            "deficit_conservative",
+            rationale,
+            {"kcal": 2500, "training": "Full program, monitor closely"},
+        )
+
+    # All clear
+    if recovery_score > 0 and s.strain_7d_total / 7 < 13:
+        rationale.append(
+            f"All signals green: recovery {recovery_score:.2f}, "
+            f"strain {s.strain_7d_total / 7:.1f}/d"
+        )
+        return (
+            "deficit",
+            rationale,
+            {"kcal": 2300, "training": "Full program, progression OK"},
+        )
+
+    # Conservative bias default
+    rationale.append(
+        f"Mixed signals (recovery {recovery_score:.2f}, "
+        f"strain {s.strain_7d_total / 7:.1f}/d) — conservative"
+    )
+    return (
+        "deficit_conservative",
+        rationale,
+        {"kcal": 2500, "training": "Full program, monitor closely"},
+    )
+```
+
+Run: `pytest tests/test_regulation.py -v` → 6 passed.
+
+- [ ] **Step 3.3: Commit**
+
+```bash
+git add src/health_metrics/regulation.py tests/test_regulation.py
+git commit -m "feat: auto-regulation decision rules (port from spec)"
+```
+
+---
+
+## Task 4: Signal aggregation helper — `compute_regulation_signals`
+
+**Files:**
+- Modify: `src/health_metrics/regulation.py` (add the helper)
+- Test: `tests/test_regulation.py` (append)
+
+This pulls the most recent 3 days of `daily_metrics` + `manual_log` and assembles a `RegulationSignals` for `regulate()` to consume.
+
+- [ ] **Step 4.1: Append failing test to `tests/test_regulation.py`**
+
+```python
+from datetime import date
+
+import pytest
+from sqlalchemy import text
+
+from health_metrics.regulation import compute_regulation_signals
+
+
+@pytest.mark.asyncio
+async def test_compute_signals_with_three_days_data(db_session):
+    # Seed 3 days of daily_metrics with z-scores and one manual_log entry.
+    await db_session.execute(text("""
+        INSERT INTO daily_metrics (user_id, metric_date,
+            oura_hrv_avg, oura_rhr, oura_sleep_duration_min,
+            unified_hrv_z, unified_rhr_z, whoop_sleep_debt_min,
+            whoop_day_strain, oura_status, whoop_status, ingestion_complete)
+        VALUES
+            ('hugo', :d1, 45, 60, 400, -1.0, 0.5, 200, 12.0, 'ok', 'ok', TRUE),
+            ('hugo', :d2, 47, 58, 410, -0.8, 0.3, 180, 11.0, 'ok', 'ok', TRUE),
+            ('hugo', :d3, 46, 59, 380, -1.2, 0.7, 220, 13.0, 'ok', 'ok', TRUE)
+    """), {"d1": date(2026, 5, 11), "d2": date(2026, 5, 12), "d3": date(2026, 5, 13)})
+    await db_session.execute(text("""
+        INSERT INTO manual_log (user_id, log_date,
+            subjective_energy, subjective_mood, subjective_hunger)
+        VALUES
+            ('hugo', :d1, 6, 7, 5),
+            ('hugo', :d2, 7, 7, 6),
+            ('hugo', :d3, 6, 6, 5)
+    """), {"d1": date(2026, 5, 11), "d2": date(2026, 5, 12), "d3": date(2026, 5, 13)})
+
+    signals = await compute_regulation_signals(
+        db_session, user_id="hugo", anchor=date(2026, 5, 13)
+    )
+    # HRV z avg of -1.0, -0.8, -1.2 = -1.0
+    assert signals.hrv_z_3d == pytest.approx(-1.0, abs=0.01)
+    # Sleep avg of 400, 410, 380 = 396.67
+    assert signals.sleep_3d_min == pytest.approx(396.67, abs=0.5)
+    # Subjective energy avg 6, 7, 6 = 6.33
+    assert signals.subjective_3d_energy == pytest.approx(6.33, abs=0.01)
+    assert signals.days_with_complete_data == 3
+
+
+@pytest.mark.asyncio
+async def test_compute_signals_with_no_data_returns_zero_baselines(db_session):
+    signals = await compute_regulation_signals(
+        db_session, user_id="hugo", anchor=date(2026, 5, 13)
+    )
+    assert signals.days_with_complete_data == 0
+    assert signals.subjective_3d_energy is None
+```
+
+- [ ] **Step 4.2: Add `compute_regulation_signals` to `src/health_metrics/regulation.py`**
+
+Append to the bottom:
+
+```python
+from datetime import date, timedelta
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .models import DailyMetrics, ManualLog
+
+
+async def compute_regulation_signals(
+    session: AsyncSession, user_id: str, anchor: date
+) -> RegulationSignals:
+    """Pull last-3-day daily_metrics + manual_log, aggregate into RegulationSignals."""
+    window_start = anchor - timedelta(days=2)  # anchor + 2 prior = 3 days
+
+    # daily_metrics for last 3 days
+    res = await session.execute(
+        select(DailyMetrics)
+        .where(DailyMetrics.user_id == user_id)
+        .where(DailyMetrics.metric_date >= window_start)
+        .where(DailyMetrics.metric_date <= anchor)
+        .order_by(DailyMetrics.metric_date.asc())
+    )
+    dm_rows = list(res.scalars().all())
+
+    # manual_log for last 3 days
+    res = await session.execute(
+        select(ManualLog)
+        .where(ManualLog.user_id == user_id)
+        .where(ManualLog.log_date >= window_start)
+        .where(ManualLog.log_date <= anchor)
+        .order_by(ManualLog.log_date.asc())
+    )
+    ml_rows = list(res.scalars().all())
+
+    # 7-day strain window
+    strain_start = anchor - timedelta(days=6)
+    res = await session.execute(
+        select(DailyMetrics)
+        .where(DailyMetrics.user_id == user_id)
+        .where(DailyMetrics.metric_date >= strain_start)
+        .where(DailyMetrics.metric_date <= anchor)
+    )
+    strain_rows = list(res.scalars().all())
+
+    def _avg(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    hrv_zs = [float(r.unified_hrv_z) for r in dm_rows if r.unified_hrv_z is not None]
+    rhr_zs = [float(r.unified_rhr_z) for r in dm_rows if r.unified_rhr_z is not None]
+    sleep_mins = [
+        float(r.oura_sleep_duration_min)
+        for r in dm_rows
+        if r.oura_sleep_duration_min is not None
+    ]
+    sleep_debts = [
+        float(r.whoop_sleep_debt_min)
+        for r in dm_rows
+        if r.whoop_sleep_debt_min is not None
+    ]
+    strain_total = sum(
+        float(r.whoop_day_strain) for r in strain_rows if r.whoop_day_strain is not None
+    )
+
+    energies = [
+        float(r.subjective_energy)
+        for r in ml_rows
+        if r.subjective_energy is not None
+    ]
+
+    return RegulationSignals(
+        hrv_z_3d=_avg(hrv_zs),
+        rhr_z_3d=_avg(rhr_zs),
+        sleep_3d_min=_avg(sleep_mins) if sleep_mins else 0.0,
+        sleep_debt_min=_avg(sleep_debts) if sleep_debts else 0.0,
+        strain_7d_total=strain_total,
+        subjective_3d_energy=_avg(energies) if energies else None,
+        days_with_complete_data=sum(1 for r in dm_rows if r.ingestion_complete),
+    )
+```
+
+Run: `pytest tests/test_regulation.py -v` → 8 passed.
+
+- [ ] **Step 4.3: Commit**
+
+```bash
+git add src/health_metrics/regulation.py tests/test_regulation.py
+git commit -m "feat: signal-aggregation helper for regulation"
+```
+
+---
+
+## Task 5: Narration helper — Anthropic call + content-addressed cache
+
+**Files:**
+- Create: `src/health_metrics/narration.py`
+- Test: `tests/test_narration.py`
+
+- [ ] **Step 5.1: Write failing test `tests/test_narration.py`**
+
+```python
+import json
+from datetime import date
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from sqlalchemy import select, text
+
+from health_metrics.models import NarrationCache
+from health_metrics.narration import generate_narration, signals_hash
+from health_metrics.regulation import RegulationSignals
+
+
+def _signals():
+    return RegulationSignals(
+        hrv_z_3d=-1.2, rhr_z_3d=0.4, sleep_3d_min=380,
+        sleep_debt_min=180, strain_7d_total=85,
+        subjective_3d_energy=6.0, days_with_complete_data=3,
+    )
+
+
+def test_signals_hash_is_deterministic():
+    h1 = signals_hash(_signals())
+    h2 = signals_hash(_signals())
+    assert h1 == h2
+    assert len(h1) == 64  # sha256 hex
+
+
+def test_signals_hash_changes_with_different_data():
+    s1 = _signals()
+    s2 = _signals()
+    s2.hrv_z_3d = -1.3
+    assert signals_hash(s1) != signals_hash(s2)
+
+
+@pytest.mark.asyncio
+async def test_generate_narration_calls_anthropic_and_caches(db_session):
+    fake_response = AsyncMock()
+    fake_response.content = [AsyncMock(text="HRV depressed 1.2σ — holding deficit pause.")]
+    fake_client = AsyncMock()
+    fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+    signals = _signals()
+    rec = "maintenance"
+
+    with patch("health_metrics.narration._build_client", return_value=fake_client):
+        text_out = await generate_narration(
+            db_session, user_id="hugo", metric_date=date(2026, 5, 13),
+            recommendation=rec, signals=signals, commit=False,
+        )
+
+    assert text_out == "HRV depressed 1.2σ — holding deficit pause."
+    fake_client.messages.create.assert_called_once()
+
+    # Second call with same inputs should hit cache (no second Anthropic call)
+    with patch("health_metrics.narration._build_client", return_value=fake_client):
+        text_out2 = await generate_narration(
+            db_session, user_id="hugo", metric_date=date(2026, 5, 13),
+            recommendation=rec, signals=signals, commit=False,
+        )
+
+    assert text_out2 == text_out
+    fake_client.messages.create.assert_called_once()  # still 1 call
+
+
+@pytest.mark.asyncio
+async def test_generate_narration_returns_none_when_api_key_missing(db_session, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Re-cache settings to pick up the delenv
+    from health_metrics.config import get_settings
+    get_settings.cache_clear()
+
+    signals = _signals()
+    result = await generate_narration(
+        db_session, user_id="hugo", metric_date=date(2026, 5, 13),
+        recommendation="maintenance", signals=signals, commit=False,
+    )
+    assert result is None
+```
+
+Run: `pytest tests/test_narration.py -v` → expects ImportError.
+
+- [ ] **Step 5.2: Write `src/health_metrics/narration.py`**
+
+```python
+"""Claude-generated narration for the dashboard Today strip.
+
+One-sentence explanation of the auto-regulation recommendation, generated
+by Claude Haiku. Content-addressed cache — keyed on
+(user_id, metric_date, sha256(canonical_signals_json)). New narration only
+when signals actually change.
+"""
+
+import hashlib
+import json
+from dataclasses import asdict
+from datetime import date
+
+import structlog
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .config import get_settings
+from .models import NarrationCache
+from .regulation import RegulationSignals
+
+log = structlog.get_logger()
+
+
+PROMPT_TEMPLATE = (
+    "You are Hugo's health-and-fitness analytical assistant. Given today's "
+    "auto-regulation output and the underlying signals, write ONE concise "
+    "sentence (max 25 words) explaining the recommendation in physiological "
+    "terms Hugo will recognize. Be specific about the numbers driving the "
+    "call. Don't hedge.\n\n"
+    "Today's recommendation: {recommendation}\n"
+    "Triggering signals (JSON): {signals_json}\n\n"
+    "Conservative bias is built into the rules — your job is to explain, "
+    "not second-guess. Return ONLY the sentence, no prefix or quotes."
+)
+
+
+def signals_hash(signals: RegulationSignals) -> str:
+    """SHA256 of the canonical-JSON serialization of signals."""
+    payload = json.dumps(asdict(signals), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _build_client():
+    """Return an Anthropic AsyncClient or None if no API key."""
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        return None
+    from anthropic import AsyncAnthropic
+    return AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+
+async def generate_narration(
+    session: AsyncSession,
+    user_id: str,
+    metric_date: date,
+    recommendation: str,
+    signals: RegulationSignals,
+    commit: bool = True,
+) -> str | None:
+    """Return a narration sentence for the given inputs. None if API key absent.
+
+    Pulls from `narration_cache` if a row already exists for the same
+    (user_id, metric_date, signals_hash). Otherwise calls Anthropic, caches
+    the result, and returns it.
+    """
+    h = signals_hash(signals)
+
+    # Cache lookup
+    res = await session.execute(
+        select(NarrationCache).where(
+            NarrationCache.user_id == user_id,
+            NarrationCache.metric_date == metric_date,
+            NarrationCache.signals_hash == h,
+        )
+    )
+    cached = res.scalar_one_or_none()
+    if cached:
+        return cached.narration_text
+
+    client = _build_client()
+    if client is None:
+        log.warning("narration_no_api_key", user_id=user_id, date=metric_date.isoformat())
+        return None
+
+    settings = get_settings()
+    prompt = PROMPT_TEMPLATE.format(
+        recommendation=recommendation,
+        signals_json=json.dumps(asdict(signals), sort_keys=True),
+    )
+
+    try:
+        response = await client.messages.create(
+            model=settings.narration_model,
+            max_tokens=settings.narration_max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        narration_text = response.content[0].text.strip()
+    except Exception as e:
+        log.error(
+            "narration_api_failed",
+            user_id=user_id,
+            date=metric_date.isoformat(),
+            error=str(e),
+        )
+        return None
+
+    # Upsert cache
+    stmt = pg_insert(NarrationCache).values(
+        user_id=user_id,
+        metric_date=metric_date,
+        signals_hash=h,
+        narration_text=narration_text,
+        model=settings.narration_model,
+    )
+    stmt = stmt.on_conflict_do_nothing(
+        index_elements=["user_id", "metric_date", "signals_hash"]
+    )
+    await session.execute(stmt)
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
+
+    log.info(
+        "narration_generated",
+        user_id=user_id,
+        date=metric_date.isoformat(),
+        model=settings.narration_model,
+        chars=len(narration_text),
+    )
+    return narration_text
+```
+
+Run: `pytest tests/test_narration.py -v` → expect 4 passed.
+
+- [ ] **Step 5.3: Commit**
+
+```bash
+git add src/health_metrics/narration.py tests/test_narration.py
+git commit -m "feat: Claude narration with content-addressed cache"
+```
+
+---
+
+## Task 6: API router scaffolding + CORS + `GET /api/dashboard/today`
+
+**Files:**
+- Create: `src/health_metrics/routes/api.py`
+- Modify: `src/health_metrics/main.py` (CORS + include router)
+- Test: `tests/test_api_dashboard_today.py`
+
+- [ ] **Step 6.1: Write failing test `tests/test_api_dashboard_today.py`**
+
+```python
+from datetime import date
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_today_returns_recommendation_and_today_strip(db_session, monkeypatch):
+    # Seed 3 days of daily_metrics + manual_log
+    await db_session.execute(text("""
+        INSERT INTO daily_metrics (user_id, metric_date,
+            oura_hrv_avg, oura_rhr, oura_sleep_duration_min,
+            unified_hrv_z, unified_rhr_z, whoop_sleep_debt_min,
+            whoop_day_strain, oura_status, whoop_status, ingestion_complete)
+        VALUES
+            ('hugo', :d1, 45, 60, 400, -1.0, 0.5, 200, 12.0, 'ok', 'ok', TRUE),
+            ('hugo', :d2, 47, 58, 410, -0.8, 0.3, 180, 11.0, 'ok', 'ok', TRUE),
+            ('hugo', :d3, 46, 59, 380, -1.2, 0.7, 220, 13.0, 'ok', 'ok', TRUE)
+    """), {"d1": date(2026, 5, 11), "d2": date(2026, 5, 12), "d3": date(2026, 5, 13)})
+    await db_session.execute(text(
+        "INSERT INTO manual_log (user_id, log_date, subjective_energy) "
+        "VALUES ('hugo', :d, 6)"
+    ), {"d": date(2026, 5, 13)})
+    await db_session.flush()
+
+    # Patch AsyncSessionLocal so the route uses our test session.
+    from health_metrics.routes import api as api_route
+    monkeypatch.setattr(api_route, "_session_factory", lambda: db_session_context(db_session))
+
+    # Patch narration to skip Anthropic
+    async def fake_narration(*args, **kwargs):
+        return "HRV depressed 1.2σ over 3 days — holding deficit pause."
+
+    monkeypatch.setattr(api_route, "generate_narration", fake_narration)
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/dashboard/today?user_id=hugo&as_of=2026-05-13")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["metric_date"] == "2026-05-13"
+    assert body["today_strip"]["recommendation"] in (
+        "deficit", "deficit_conservative", "maintenance", "deload"
+    )
+    assert body["today_strip"]["today_hrv_ms"] == 46
+    assert body["today_strip"]["hrv_z_3d_avg"] == pytest.approx(-1.0, abs=0.01)
+    assert "subjective" not in body["today_strip"]["log_status"]  # subjective IS logged
+    assert body["narration"] == "HRV depressed 1.2σ over 3 days — holding deficit pause."
+
+
+def db_session_context(session):
+    """Helper that returns a context manager wrapping an existing session.
+
+    The route opens AsyncSessionLocal() — we monkeypatch the factory to
+    return THIS context manager around the test session so we share
+    the transaction.
+    """
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def _ctx():
+        yield session
+    return _ctx()
+```
+
+Note: this test pattern threads the test's `db_session` through the route. We achieve that by patching `api._session_factory` (defined in step 6.2 below) — the route calls `_session_factory()` instead of `AsyncSessionLocal()` directly, so tests can substitute.
+
+- [ ] **Step 6.2: Write `src/health_metrics/routes/api.py`**
+
+```python
+"""Dashboard REST endpoints (consumed by the Next.js dashboard frontend)."""
+
+from contextlib import asynccontextmanager
+from datetime import date as date_type, datetime, timedelta
+from typing import Any, AsyncIterator
+from zoneinfo import ZoneInfo
+
+import structlog
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import get_settings
+from ..db import AsyncSessionLocal
+from ..models import DailyMetrics, ManualLog
+from ..narration import generate_narration
+from ..regulation import compute_regulation_signals, regulate
+
+log = structlog.get_logger()
+router = APIRouter(prefix="/api")
+
+
+# Indirection so tests can substitute the session factory
+def _session_factory() -> AsyncIterator[AsyncSession]:
+    @asynccontextmanager
+    async def _ctx():
+        async with AsyncSessionLocal() as session:
+            yield session
+    return _ctx()
+
+
+def _resolve_as_of(as_of: str | None) -> date_type:
+    if as_of is None:
+        tz = ZoneInfo(get_settings().timezone)
+        return datetime.now(tz).date() - timedelta(days=1)
+    try:
+        return date_type.fromisoformat(as_of)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid as_of: {e}")
+
+
+def _log_status_for(ml: ManualLog | None) -> str:
+    if ml is None:
+        return "all_missing"
+    parts = []
+    if ml.subjective_energy is None or ml.subjective_mood is None or ml.subjective_hunger is None:
+        parts.append("subjective_missing")
+    if ml.weight_lbs is None:
+        parts.append("weight_missing")
+    if ml.kcal_consumed is None:
+        parts.append("nutrition_missing")
+    return ",".join(parts) if parts else "complete"
+
+
+@router.get("/dashboard/today")
+async def dashboard_today(
+    user_id: str = Query(default=None),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+
+    async with _session_factory() as session:
+        # Fetch most recent daily_metrics ≤ anchor
+        res = await session.execute(
+            select(DailyMetrics)
+            .where(DailyMetrics.user_id == uid)
+            .where(DailyMetrics.metric_date <= anchor)
+            .order_by(DailyMetrics.metric_date.desc())
+            .limit(1)
+        )
+        dm = res.scalar_one_or_none()
+
+        # Manual log for anchor
+        res = await session.execute(
+            select(ManualLog).where(
+                ManualLog.user_id == uid,
+                ManualLog.log_date == anchor,
+            )
+        )
+        ml = res.scalar_one_or_none()
+
+        # Compute regulation
+        signals = await compute_regulation_signals(session, uid, anchor)
+        recommendation, rationale, payload = regulate(signals)
+
+        # Narration (cached + content-addressed)
+        narration = await generate_narration(
+            session, uid, anchor, recommendation, signals
+        )
+
+        today_hrv = dm.oura_hrv_avg if (dm and dm.oura_hrv_avg is not None) else (
+            int(dm.whoop_hrv_ms) if dm and dm.whoop_hrv_ms is not None else None
+        )
+
+        return {
+            "as_of": datetime.now(ZoneInfo(settings.timezone)).isoformat(),
+            "metric_date": dm.metric_date.isoformat() if dm else anchor.isoformat(),
+            "today_strip": {
+                "recommendation": recommendation,
+                "suggested_kcal": payload.get("kcal"),
+                "suggested_training_mod": payload.get("training"),
+                "today_hrv_ms": today_hrv,
+                "hrv_z_3d_avg": round(signals.hrv_z_3d, 2) if signals.hrv_z_3d else 0.0,
+                "log_status": _log_status_for(ml),
+            },
+            "narration": narration,
+            "narration_generated_at": datetime.now(ZoneInfo(settings.timezone)).isoformat()
+            if narration else None,
+            "rationale": rationale,
+        }
+```
+
+- [ ] **Step 6.3: Add CORS + include router in `src/health_metrics/main.py`**
+
+Modify the imports block:
+
+```python
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+```
+
+After `app = FastAPI(...)`, add CORS:
+
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+```
+
+Update router includes to add the new api router:
+
+```python
+from .routes import health as health_route, ingest as ingest_route, api as api_route
+
+app.include_router(health_route.router)
+app.include_router(ingest_route.router)
+app.include_router(api_route.router)
+```
+
+- [ ] **Step 6.4: Run tests**
+
+```bash
+cd ~/code/health-metrics-service
+source .venv/bin/activate
+pytest tests/test_api_dashboard_today.py -v
+```
+
+Expected: 1 passed.
+
+If the monkeypatch pattern in the test doesn't work cleanly (it can be fragile), an alternative: have the test call the endpoint via `httpx` against a real running app, with the DB seeded outside the test transaction. Document whichever path works.
+
+- [ ] **Step 6.5: Commit**
+
+```bash
+git add src/health_metrics/routes/api.py src/health_metrics/main.py tests/test_api_dashboard_today.py
+git commit -m "feat: /api/dashboard/today endpoint + CORS middleware"
+```
+
+---
+
+## Task 7: `GET /api/dashboard/grid?days=N`
+
+**Files:**
+- Modify: `src/health_metrics/routes/api.py` (append endpoint)
+- Test: `tests/test_api_dashboard_grid.py`
+
+- [ ] **Step 7.1: Write failing test `tests/test_api_dashboard_grid.py`**
+
+```python
+from datetime import date, timedelta
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_grid_returns_six_tiles(db_session, monkeypatch):
+    # Seed 14 days of data for hugo
+    for i in range(14):
+        d = date(2026, 5, 1) + timedelta(days=i)
+        await db_session.execute(text("""
+            INSERT INTO daily_metrics (user_id, metric_date,
+                oura_hrv_avg, oura_rhr, oura_sleep_duration_min,
+                whoop_day_strain, whoop_recovery_score,
+                oura_status, whoop_status)
+            VALUES (:u, :d, :hrv, :rhr, :sl, :st, :rec, 'ok', 'ok')
+        """), {"u": "hugo", "d": d, "hrv": 45 + i, "rhr": 60 - (i % 3),
+               "sl": 380 + (i * 5), "st": 10 + (i * 0.3), "rec": 55 + i})
+        await db_session.execute(text(
+            "INSERT INTO manual_log (user_id, log_date, weight_lbs) "
+            "VALUES (:u, :d, :w)"
+        ), {"u": "hugo", "d": d, "w": 220 - (i * 0.1)})
+    await db_session.flush()
+
+    from contextlib import asynccontextmanager
+    from health_metrics.routes import api as api_route
+
+    @asynccontextmanager
+    async def _ctx():
+        yield db_session
+
+    monkeypatch.setattr(api_route, "_session_factory", lambda: _ctx())
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/dashboard/grid?user_id=hugo&days=14")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["n_days"] == 14
+    metrics = {t["metric"] for t in body["tiles"]}
+    assert metrics == {"hrv", "rhr", "sleep_min", "strain", "weight_lbs", "recovery"}
+    hrv_tile = next(t for t in body["tiles"] if t["metric"] == "hrv")
+    assert len(hrv_tile["series"]) == 14
+    assert hrv_tile["current"] == 58  # 45 + 13
+```
+
+- [ ] **Step 7.2: Append endpoint to `src/health_metrics/routes/api.py`**
+
+```python
+from ..models import Workout
+
+METRIC_COLUMNS = {
+    "hrv": "oura_hrv_avg",
+    "rhr": "oura_rhr",
+    "sleep_min": "oura_sleep_duration_min",
+    "strain": "whoop_day_strain",
+    "recovery": "whoop_recovery_score",
+}
+
+
+@router.get("/dashboard/grid")
+async def dashboard_grid(
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=14, ge=1, le=365),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+    start = anchor - timedelta(days=days - 1)
+
+    async with _session_factory() as session:
+        res = await session.execute(
+            select(DailyMetrics)
+            .where(DailyMetrics.user_id == uid)
+            .where(DailyMetrics.metric_date >= start)
+            .where(DailyMetrics.metric_date <= anchor)
+            .order_by(DailyMetrics.metric_date.asc())
+        )
+        dm_rows = list(res.scalars().all())
+
+        res = await session.execute(
+            select(ManualLog)
+            .where(ManualLog.user_id == uid)
+            .where(ManualLog.log_date >= start)
+            .where(ManualLog.log_date <= anchor)
+            .order_by(ManualLog.log_date.asc())
+        )
+        ml_rows = list(res.scalars().all())
+
+    tiles = []
+    for metric, col in METRIC_COLUMNS.items():
+        series = [
+            {"date": r.metric_date.isoformat(), "value": getattr(r, col)}
+            for r in dm_rows
+            if getattr(r, col) is not None
+        ]
+        # convert Decimal to float for JSON
+        for pt in series:
+            if pt["value"] is not None and not isinstance(pt["value"], (int, float)):
+                pt["value"] = float(pt["value"])
+        current = series[-1]["value"] if series else None
+        tiles.append({"metric": metric, "current": current, "series": series})
+
+    weight_series = [
+        {"date": r.log_date.isoformat(),
+         "value": float(r.weight_lbs) if r.weight_lbs is not None else None}
+        for r in ml_rows
+        if r.weight_lbs is not None
+    ]
+    tiles.append({
+        "metric": "weight_lbs",
+        "current": weight_series[-1]["value"] if weight_series else None,
+        "series": weight_series,
+    })
+
+    return {"n_days": days, "tiles": tiles}
+```
+
+Run: `pytest tests/test_api_dashboard_grid.py -v` → 1 passed.
+
+- [ ] **Step 7.3: Commit**
+
+```bash
+git add src/health_metrics/routes/api.py tests/test_api_dashboard_grid.py
+git commit -m "feat: /api/dashboard/grid endpoint"
+```
+
+---
+
+## Task 8: `GET /api/metric/{name}?days=N`
+
+**Files:**
+- Modify: `src/health_metrics/routes/api.py`
+- Test: `tests/test_api_metric.py`
+
+- [ ] **Step 8.1: Write failing test `tests/test_api_metric.py`**
+
+```python
+from datetime import date, timedelta
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+
+
+@pytest.mark.asyncio
+async def test_metric_hrv_returns_series_with_stats(db_session, monkeypatch):
+    for i in range(14):
+        d = date(2026, 5, 1) + timedelta(days=i)
+        await db_session.execute(text("""
+            INSERT INTO daily_metrics (user_id, metric_date,
+                oura_hrv_avg, unified_hrv_z, oura_status, whoop_status)
+            VALUES (:u, :d, :hrv, :z, 'ok', 'ok')
+        """), {"u": "hugo", "d": d, "hrv": 45 + (i % 7), "z": -0.5 + (i * 0.05)})
+    await db_session.flush()
+
+    from contextlib import asynccontextmanager
+    from health_metrics.routes import api as api_route
+
+    @asynccontextmanager
+    async def _ctx():
+        yield db_session
+
+    monkeypatch.setattr(api_route, "_session_factory", lambda: _ctx())
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/metric/hrv?user_id=hugo&days=14&as_of=2026-05-14")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["metric"] == "hrv"
+    assert body["n_days"] == 14
+    assert len(body["series"]) == 14
+    assert "mean" in body["stats"]
+    assert "std" in body["stats"]
+    assert "slope_per_day" in body["stats"]
+
+
+@pytest.mark.asyncio
+async def test_metric_unknown_returns_400(db_session, monkeypatch):
+    from contextlib import asynccontextmanager
+    from health_metrics.routes import api as api_route
+
+    @asynccontextmanager
+    async def _ctx():
+        yield db_session
+
+    monkeypatch.setattr(api_route, "_session_factory", lambda: _ctx())
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/metric/unknown?user_id=hugo&days=14")
+    assert resp.status_code == 400
+```
+
+- [ ] **Step 8.2: Append endpoint to `src/health_metrics/routes/api.py`**
+
+```python
+import statistics
+
+
+ALL_METRIC_DEFS: dict[str, dict[str, str]] = {
+    "hrv": {"column": "oura_hrv_avg", "source_table": "daily_metrics", "z_column": "unified_hrv_z"},
+    "rhr": {"column": "oura_rhr", "source_table": "daily_metrics", "z_column": "unified_rhr_z"},
+    "sleep_min": {"column": "oura_sleep_duration_min", "source_table": "daily_metrics", "z_column": "unified_sleep_z"},
+    "strain": {"column": "whoop_day_strain", "source_table": "daily_metrics", "z_column": None},
+    "recovery": {"column": "whoop_recovery_score", "source_table": "daily_metrics", "z_column": None},
+    "weight_lbs": {"column": "weight_lbs", "source_table": "manual_log", "z_column": None},
+}
+
+
+@router.get("/metric/{name}")
+async def metric_drilldown(
+    name: str,
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=14, ge=1, le=365),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    if name not in ALL_METRIC_DEFS:
+        raise HTTPException(status_code=400, detail=f"unknown metric: {name}")
+
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+    start = anchor - timedelta(days=days - 1)
+    meta = ALL_METRIC_DEFS[name]
+
+    async with _session_factory() as session:
+        if meta["source_table"] == "daily_metrics":
+            res = await session.execute(
+                select(DailyMetrics)
+                .where(DailyMetrics.user_id == uid)
+                .where(DailyMetrics.metric_date >= start)
+                .where(DailyMetrics.metric_date <= anchor)
+                .order_by(DailyMetrics.metric_date.asc())
+            )
+            rows = list(res.scalars().all())
+            series = []
+            for r in rows:
+                v = getattr(r, meta["column"])
+                if v is None:
+                    continue
+                pt = {"date": r.metric_date.isoformat(), "value": float(v)}
+                if meta["z_column"]:
+                    z = getattr(r, meta["z_column"])
+                    pt["z"] = float(z) if z is not None else None
+                series.append(pt)
+        else:  # manual_log
+            res = await session.execute(
+                select(ManualLog)
+                .where(ManualLog.user_id == uid)
+                .where(ManualLog.log_date >= start)
+                .where(ManualLog.log_date <= anchor)
+                .order_by(ManualLog.log_date.asc())
+            )
+            rows = list(res.scalars().all())
+            series = [
+                {"date": r.log_date.isoformat(), "value": float(getattr(r, meta["column"]))}
+                for r in rows
+                if getattr(r, meta["column"]) is not None
+            ]
+
+    values = [pt["value"] for pt in series]
+    if len(values) >= 2:
+        mean = statistics.mean(values)
+        std = statistics.stdev(values) if len(values) > 1 else 0.0
+        # Simple linear slope
+        n = len(values)
+        xs = list(range(n))
+        x_mean = sum(xs) / n
+        y_mean = mean
+        num = sum((xs[i] - x_mean) * (values[i] - y_mean) for i in range(n))
+        den = sum((x - x_mean) ** 2 for x in xs)
+        slope = num / den if den != 0 else 0.0
+    else:
+        mean = values[0] if values else 0.0
+        std = 0.0
+        slope = 0.0
+
+    z_today = None
+    if series and meta.get("z_column"):
+        last = series[-1]
+        z_today = last.get("z")
+
+    return {
+        "metric": name,
+        "n_days": days,
+        "series": series,
+        "stats": {
+            "mean": round(mean, 2),
+            "std": round(std, 2),
+            "slope_per_day": round(slope, 3),
+            "z_today": z_today,
+        },
+        "baseline": {
+            "mean": round(mean, 2),
+            "lower_1sd": round(mean - std, 2),
+            "upper_1sd": round(mean + std, 2),
+        },
+    }
+```
+
+Run: `pytest tests/test_api_metric.py -v` → 2 passed.
+
+- [ ] **Step 8.3: Commit**
+
+```bash
+git add src/health_metrics/routes/api.py tests/test_api_metric.py
+git commit -m "feat: /api/metric/{name} drill-down endpoint"
+```
+
+---
+
+## Task 9: `POST /api/manual-log` — UPSERT manual_log row
+
+**Files:**
+- Modify: `src/health_metrics/routes/api.py`
+- Test: `tests/test_api_manual_log.py`
+
+- [ ] **Step 9.1: Write failing test `tests/test_api_manual_log.py`**
+
+```python
+from datetime import date
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from health_metrics.models import ManualLog
+
+
+@pytest.mark.asyncio
+async def test_manual_log_upserts_subjective_then_weight(db_session, monkeypatch):
+    from contextlib import asynccontextmanager
+    from health_metrics.routes import api as api_route
+
+    @asynccontextmanager
+    async def _ctx():
+        yield db_session
+
+    monkeypatch.setattr(api_route, "_session_factory", lambda: _ctx())
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # First POST: subjective markers only
+        resp1 = await client.post("/api/manual-log", json={
+            "user_id": "hugo",
+            "date": "2026-05-13",
+            "subjective_energy": 6,
+            "subjective_mood": 7,
+            "subjective_hunger": 5,
+        })
+        assert resp1.status_code == 200
+        body = resp1.json()
+        assert set(body["fields_updated"]) == {"subjective_energy", "subjective_mood", "subjective_hunger"}
+        assert body["completeness"]["subjective"] is True
+        assert body["completeness"]["weight"] is False
+
+        # Second POST: add weight
+        resp2 = await client.post("/api/manual-log", json={
+            "user_id": "hugo",
+            "date": "2026-05-13",
+            "weight_lbs": 218.4,
+        })
+        assert resp2.status_code == 200
+        body2 = resp2.json()
+        assert body2["fields_updated"] == ["weight_lbs"]
+        assert body2["completeness"]["subjective"] is True  # still True (merged)
+        assert body2["completeness"]["weight"] is True
+
+    # Verify single row in DB
+    res = await db_session.execute(
+        select(ManualLog).where(ManualLog.user_id == "hugo", ManualLog.log_date == date(2026, 5, 13))
+    )
+    rows = res.scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.subjective_energy == 6
+    assert float(row.weight_lbs) == 218.4
+```
+
+- [ ] **Step 9.2: Append endpoint to `src/health_metrics/routes/api.py`**
+
+```python
+from fastapi import Body
+from pydantic import BaseModel, Field as PydField
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+
+class ManualLogPayload(BaseModel):
+    user_id: str | None = None
+    date: str  # ISO date
+    subjective_energy: int | None = PydField(default=None, ge=1, le=10)
+    subjective_mood: int | None = PydField(default=None, ge=1, le=10)
+    subjective_hunger: int | None = PydField(default=None, ge=1, le=10)
+    weight_lbs: float | None = PydField(default=None, ge=50, le=500)
+    kcal_consumed: int | None = PydField(default=None, ge=0, le=10000)
+    protein_g: int | None = PydField(default=None, ge=0, le=1000)
+    fat_g: int | None = PydField(default=None, ge=0, le=1000)
+    carbs_g: int | None = PydField(default=None, ge=0, le=2000)
+    notes: str | None = None
+
+
+@router.post("/manual-log")
+async def manual_log(payload: ManualLogPayload = Body(...)) -> dict[str, Any]:
+    settings = get_settings()
+    uid = payload.user_id or settings.user_id
+    try:
+        log_date = date_type.fromisoformat(payload.date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid date: {e}")
+
+    fields = payload.model_dump(exclude_none=True, exclude={"user_id", "date"})
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    fields_updated = list(fields.keys())
+
+    async with _session_factory() as session:
+        stmt = pg_insert(ManualLog).values(user_id=uid, log_date=log_date, **fields)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "log_date"], set_=fields
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+        res = await session.execute(
+            select(ManualLog).where(
+                ManualLog.user_id == uid, ManualLog.log_date == log_date
+            )
+        )
+        row = res.scalar_one()
+
+    completeness = {
+        "subjective": all([
+            row.subjective_energy is not None,
+            row.subjective_mood is not None,
+            row.subjective_hunger is not None,
+        ]),
+        "weight": row.weight_lbs is not None,
+        "nutrition": row.kcal_consumed is not None,
+    }
+    next_required = []
+    if not completeness["subjective"]:
+        next_required.extend(["subjective_energy", "subjective_mood", "subjective_hunger"])
+
+    return {
+        "logged_date": log_date.isoformat(),
+        "fields_updated": fields_updated,
+        "completeness": completeness,
+        "next_required_inputs": next_required,
+    }
+```
+
+Run: `pytest tests/test_api_manual_log.py -v` → 1 passed.
+
+- [ ] **Step 9.3: Commit**
+
+```bash
+git add src/health_metrics/routes/api.py tests/test_api_manual_log.py
+git commit -m "feat: POST /api/manual-log endpoint with UPSERT"
+```
+
+---
+
+## Task 10: `GET /api/workouts?days=N&type=...`
+
+**Files:**
+- Modify: `src/health_metrics/routes/api.py`
+- Test: `tests/test_api_workouts.py`
+
+- [ ] **Step 10.1: Write failing test `tests/test_api_workouts.py`**
+
+```python
+from datetime import date
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+
+
+@pytest.mark.asyncio
+async def test_workouts_filters_by_type_and_window(db_session, monkeypatch):
+    await db_session.execute(text("""
+        INSERT INTO workouts (user_id, workout_date, source, source_id,
+            workout_type, started_at, duration_min, strain, avg_hr)
+        VALUES
+            ('hugo', '2026-05-12', 'whoop', 'w-1', 'cycling',
+             '2026-05-12T17:00:00+00:00'::timestamptz, 45, 14.2, 135),
+            ('hugo', '2026-05-11', 'whoop', 'w-2', 'strength',
+             '2026-05-11T17:00:00+00:00'::timestamptz, 60, 11.8, 110),
+            ('hugo', '2026-04-01', 'whoop', 'w-3', 'cycling',
+             '2026-04-01T17:00:00+00:00'::timestamptz, 30, 8.0, 120)
+    """))
+    await db_session.flush()
+
+    from contextlib import asynccontextmanager
+    from health_metrics.routes import api as api_route
+
+    @asynccontextmanager
+    async def _ctx():
+        yield db_session
+
+    monkeypatch.setattr(api_route, "_session_factory", lambda: _ctx())
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # 30d window with no filter — should see 2 (5/12 and 5/11), not 4/1
+        resp = await client.get("/api/workouts?user_id=hugo&days=30&as_of=2026-05-13")
+        assert resp.status_code == 200
+        assert len(resp.json()["workouts"]) == 2
+
+        # 30d with type=cycling — should see 1
+        resp = await client.get("/api/workouts?user_id=hugo&days=30&workout_type=cycling&as_of=2026-05-13")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["workouts"]) == 1
+        assert body["workouts"][0]["source_id"] == "w-1"
+```
+
+- [ ] **Step 10.2: Append endpoint to `src/health_metrics/routes/api.py`**
+
+```python
+@router.get("/workouts")
+async def workouts(
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=30, ge=1, le=365),
+    workout_type: str | None = Query(default=None),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+    start = anchor - timedelta(days=days - 1)
+
+    async with _session_factory() as session:
+        stmt = (
+            select(Workout)
+            .where(Workout.user_id == uid)
+            .where(Workout.workout_date >= start)
+            .where(Workout.workout_date <= anchor)
+            .order_by(Workout.workout_date.desc(), Workout.started_at.desc())
+        )
+        if workout_type:
+            stmt = stmt.where(Workout.workout_type == workout_type)
+        res = await session.execute(stmt)
+        rows = list(res.scalars().all())
+
+    return {
+        "n_days": days,
+        "workouts": [
+            {
+                "date": r.workout_date.isoformat(),
+                "source": r.source,
+                "source_id": r.source_id,
+                "type": r.workout_type,
+                "started_at": r.started_at.isoformat(),
+                "duration_min": r.duration_min,
+                "strain": float(r.strain) if r.strain is not None else None,
+                "kcal": r.kcal,
+                "avg_hr": r.avg_hr,
+                "max_hr": r.max_hr,
+                "zones": {
+                    "0": r.zone_0_min, "1": r.zone_1_min, "2": r.zone_2_min,
+                    "3": r.zone_3_min, "4": r.zone_4_min, "5": r.zone_5_min,
+                },
+            }
+            for r in rows
+        ],
+    }
+```
+
+Run: `pytest tests/test_api_workouts.py -v` → 1 passed.
+
+- [ ] **Step 10.3: Commit**
+
+```bash
+git add src/health_metrics/routes/api.py tests/test_api_workouts.py
+git commit -m "feat: /api/workouts endpoint with type filter"
+```
+
+---
+
+## Task 11: End-to-end smoke + final phase commit
+
+**Files:**
+- No new files
+
+- [ ] **Step 11.1: Run full test suite**
+
+```bash
+cd ~/code/health-metrics-service
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+Expected: ~35 passed (20 prior + 15 new across tasks 1-10).
+
+- [ ] **Step 11.2: Live smoke against the running app**
+
+```bash
+pkill -f 'uvicorn src.health_metrics' 2>/dev/null; sleep 1
+uvicorn src.health_metrics.main:app --port 8000 > /tmp/hms_dashboard_backend_smoke.log 2>&1 &
+UV_PID=$!
+sleep 3
+
+echo "=== /api/dashboard/today ==="
+curl -s "http://localhost:8000/api/dashboard/today?user_id=hugo&as_of=2026-05-13" | head -c 500; echo
+
+echo "=== /api/dashboard/grid ==="
+curl -s "http://localhost:8000/api/dashboard/grid?user_id=hugo&days=14" | head -c 500; echo
+
+echo "=== /api/metric/hrv ==="
+curl -s "http://localhost:8000/api/metric/hrv?user_id=hugo&days=14" | head -c 500; echo
+
+echo "=== POST /api/manual-log ==="
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"user_id":"hugo","date":"2026-05-14","subjective_energy":7,"subjective_mood":7,"subjective_hunger":5}' \
+  http://localhost:8000/api/manual-log
+echo
+
+echo "=== /api/workouts ==="
+curl -s "http://localhost:8000/api/workouts?user_id=hugo&days=30" | head -c 500; echo
+
+kill $UV_PID 2>/dev/null
+```
+
+Expected: all 5 endpoints return JSON. `dashboard/today` returns a recommendation. `manual-log` POST returns `fields_updated` and `completeness`. Note: with no `ANTHROPIC_API_KEY` set, `narration` field will be `null` — that's expected and the dashboard renders without it.
+
+- [ ] **Step 11.3: Tag this milestone**
+
+```bash
+git tag -a v0.2.0-dashboard-backend -m "Dashboard backend complete: 5 endpoints + Anthropic narration"
+git push --tags
+git log --oneline | head -15
+```
+
+---
+
+## Validation checklist (Plan 1 exit criteria)
+
+- [ ] `pytest tests/ -v` — all tests pass (35 expected)
+- [ ] `alembic upgrade head` clean; `narration_cache` table present in psql `\dt`
+- [ ] All 5 curl smokes return 200
+- [ ] `/api/dashboard/today` returns recommendation + (null narration if no API key)
+- [ ] `/api/dashboard/grid?days=14` returns 6 tile entries
+- [ ] `/api/metric/hrv` returns `series`, `stats`, `baseline`
+- [ ] `POST /api/manual-log` upserts; second POST merges
+- [ ] `/api/workouts?days=30&workout_type=cycling` filters correctly
+- [ ] `v0.2.0-dashboard-backend` tag pushed
+- [ ] No regressions in pre-existing ingest/health tests
+
+## What's NOT in this plan (deferred to Plan 2 — frontend)
+
+- The Next.js dashboard itself
+- Component library + Tailwind setup
+- Recharts integration
+- Anthropic API key acquisition + live narration testing (acceptable to ship Plan 1 with `null` narrations; Plan 2 sets the key + tests live)
