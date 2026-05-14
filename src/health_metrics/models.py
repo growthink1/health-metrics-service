@@ -164,3 +164,31 @@ class OAuthState(Base):
     __table_args__ = (
         UniqueConstraint("provider", "user_id", name="uq_oauth_state_provider_user"),
     )
+
+
+class NarrationCache(Base):
+    """Content-addressed cache of Claude-generated narration sentences.
+
+    Keyed on (user_id, metric_date, signals_hash). The signals_hash is
+    SHA256 of the canonical JSON of the regulation signals payload — so
+    if signals don't change, the cached narration is reused indefinitely.
+    """
+
+    __tablename__ = "narration_cache"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    signals_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    narration_text: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("NOW()")
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "metric_date", "signals_hash",
+            name="uq_narration_cache_user_date_hash",
+        ),
+    )

@@ -9,6 +9,7 @@ def test_all_expected_tables_registered():
         "manual_log",
         "regulation_recommendations",
         "oauth_state",
+        "narration_cache",
     }
 
 
@@ -22,3 +23,9 @@ def test_workouts_source_uniqueness():
     t = Base.metadata.tables["workouts"]
     uqs = {c.name for c in t.constraints if c.__class__.__name__ == "UniqueConstraint"}
     assert "uq_workouts_source_sourceid" in uqs
+
+
+def test_narration_cache_unique_constraint():
+    t = Base.metadata.tables["narration_cache"]
+    uqs = {c.name for c in t.constraints if c.__class__.__name__ == "UniqueConstraint"}
+    assert "uq_narration_cache_user_date_hash" in uqs
