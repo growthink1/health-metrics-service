@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     whoop_base_url: str = Field(default="https://api.prod.whoop.com/developer/v1")
     whoop_oauth_url: str = Field(default="https://api.prod.whoop.com/oauth/oauth2/token")
 
+    # Anthropic (dashboard narration)
+    anthropic_api_key: Optional[str] = Field(default=None)
+    narration_model: str = Field(default="claude-3-5-haiku-latest")
+    narration_max_tokens: int = Field(default=80)
+
+    # CORS (dashboard frontend)
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3000"]
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
