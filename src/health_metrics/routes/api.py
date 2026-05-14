@@ -12,12 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import AsyncSessionLocal
-from ..models import DailyMetrics, ManualLog
+from ..models import DailyMetrics, ManualLog, Workout
 from ..narration import generate_narration
 from ..regulation import compute_regulation_signals, regulate
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
+
+METRIC_COLUMNS = {
+    "hrv": "oura_hrv_avg",
+    "rhr": "oura_rhr",
+    "sleep_min": "oura_sleep_duration_min",
+    "strain": "whoop_day_strain",
+    "recovery": "whoop_recovery_score",
+}
 
 
 # Indirection so tests can substitute the session factory
@@ -110,3 +118,62 @@ async def dashboard_today(
             if narration else None,
             "rationale": rationale,
         }
+
+
+@router.get("/dashboard/grid")
+async def dashboard_grid(
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=14, ge=1, le=365),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+    start = anchor - timedelta(days=days - 1)
+
+    async with _session_factory() as session:
+        res = await session.execute(
+            select(DailyMetrics)
+            .where(DailyMetrics.user_id == uid)
+            .where(DailyMetrics.metric_date >= start)
+            .where(DailyMetrics.metric_date <= anchor)
+            .order_by(DailyMetrics.metric_date.asc())
+        )
+        dm_rows = list(res.scalars().all())
+
+        res = await session.execute(
+            select(ManualLog)
+            .where(ManualLog.user_id == uid)
+            .where(ManualLog.log_date >= start)
+            .where(ManualLog.log_date <= anchor)
+            .order_by(ManualLog.log_date.asc())
+        )
+        ml_rows = list(res.scalars().all())
+
+    tiles = []
+    for metric, col in METRIC_COLUMNS.items():
+        series = [
+            {"date": r.metric_date.isoformat(), "value": getattr(r, col)}
+            for r in dm_rows
+            if getattr(r, col) is not None
+        ]
+        # convert Decimal to float for JSON
+        for pt in series:
+            if pt["value"] is not None and not isinstance(pt["value"], (int, float)):
+                pt["value"] = float(pt["value"])
+        current = series[-1]["value"] if series else None
+        tiles.append({"metric": metric, "current": current, "series": series})
+
+    weight_series = [
+        {"date": r.log_date.isoformat(),
+         "value": float(r.weight_lbs) if r.weight_lbs is not None else None}
+        for r in ml_rows
+        if r.weight_lbs is not None
+    ]
+    tiles.append({
+        "metric": "weight_lbs",
+        "current": weight_series[-1]["value"] if weight_series else None,
+        "series": weight_series,
+    })
+
+    return {"n_days": days, "tiles": tiles}
