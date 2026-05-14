@@ -345,3 +345,52 @@ async def manual_log(payload: ManualLogPayload = Body(...)) -> dict[str, Any]:
         "completeness": completeness,
         "next_required_inputs": next_required,
     }
+
+
+@router.get("/workouts")
+async def workouts(
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=30, ge=1, le=365),
+    workout_type: str | None = Query(default=None),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+    start = anchor - timedelta(days=days - 1)
+
+    async with _session_factory() as session:
+        stmt = (
+            select(Workout)
+            .where(Workout.user_id == uid)
+            .where(Workout.workout_date >= start)
+            .where(Workout.workout_date <= anchor)
+            .order_by(Workout.workout_date.desc(), Workout.started_at.desc())
+        )
+        if workout_type:
+            stmt = stmt.where(Workout.workout_type == workout_type)
+        res = await session.execute(stmt)
+        rows = list(res.scalars().all())
+
+    return {
+        "n_days": days,
+        "workouts": [
+            {
+                "date": r.workout_date.isoformat(),
+                "source": r.source,
+                "source_id": r.source_id,
+                "type": r.workout_type,
+                "started_at": r.started_at.isoformat(),
+                "duration_min": r.duration_min,
+                "strain": float(r.strain) if r.strain is not None else None,
+                "kcal": r.kcal,
+                "avg_hr": r.avg_hr,
+                "max_hr": r.max_hr,
+                "zones": {
+                    "0": r.zone_0_min, "1": r.zone_1_min, "2": r.zone_2_min,
+                    "3": r.zone_3_min, "4": r.zone_4_min, "5": r.zone_5_min,
+                },
+            }
+            for r in rows
+        ],
+    }
