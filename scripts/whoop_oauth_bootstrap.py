@@ -1,29 +1,32 @@
 """
 One-time Whoop OAuth bootstrap.
 
-Run this once with WHOOP_CLIENT_ID + WHOOP_CLIENT_SECRET set. It prints
-an authorization URL — open it in a browser, authorize, and paste the
-redirected `code` query param back into this script. It will then
-exchange the code for access + refresh tokens, and write the refresh
-token to .env.
+Run this once with WHOOP_CLIENT_ID + WHOOP_CLIENT_SECRET set in .env (or
+exported in the environment). It prints an authorization URL — open in a
+browser, authorize, and paste the redirected `code` query param back. It
+exchanges the code for access + refresh tokens, then prints the refresh
+token in a form you can paste into .env.
 
-DO NOT run unless you've actually configured a Whoop developer app.
+Reads config via pydantic-settings (same as the rest of the service) so
+the .env file is picked up automatically.
+
+DO NOT run unless you've configured a Whoop developer app.
 """
 
 import asyncio
-import os
 import sys
+from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
 
-CLIENT_ID = os.environ["WHOOP_CLIENT_ID"]
-CLIENT_SECRET = os.environ["WHOOP_CLIENT_SECRET"]
-REDIRECT_URI = os.environ.get(
-    "WHOOP_REDIRECT_URI", "http://localhost:8000/whoop/callback"
-)
+# Make `src/health_metrics` importable when run from the repo root.
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from health_metrics.config import get_settings  # noqa: E402
+
 AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
-TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 SCOPES = [
     "read:cycles",
     "read:recovery",
@@ -34,34 +37,62 @@ SCOPES = [
 ]
 
 
+def _require(name: str, value: str | None) -> str:
+    if not value:
+        print(
+            f"ERROR: {name} is not set. Add it to .env or export it before running this script.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return value
+
+
 async def main() -> int:
+    settings = get_settings()
+    client_id = _require("WHOOP_CLIENT_ID", settings.whoop_client_id)
+    client_secret = _require("WHOOP_CLIENT_SECRET", settings.whoop_client_secret)
+    redirect_uri = settings.whoop_redirect_uri
+    token_url = settings.whoop_oauth_url
+
     params = {
         "response_type": "code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
         "scope": " ".join(SCOPES),
         "state": "bootstrap",
     }
-    print(f"Open this URL, authorize, then paste back the `code` query param:\n\n{AUTH_URL}?{urlencode(params)}\n")
+    print(
+        "Open this URL, authorize, then paste back the `code` query param "
+        f"from the redirect URL:\n\n{AUTH_URL}?{urlencode(params)}\n"
+    )
     code = input("code: ").strip()
 
     async with httpx.AsyncClient(timeout=30.0) as http:
         resp = await http.post(
-            TOKEN_URL,
+            token_url,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": REDIRECT_URI,
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "client_secret": client_secret,
             },
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            print(
+                f"\nERROR: token endpoint returned {resp.status_code}\n{resp.text}",
+                file=sys.stderr,
+            )
+            return 1
         body = resp.json()
 
-    print("\nSuccess. Add this to your .env:")
+    print("\nSuccess. Replace the WHOOP_REFRESH_TOKEN line in .env with:\n")
     print(f"WHOOP_REFRESH_TOKEN={body['refresh_token']}")
-    print(f"\nAccess token (expires in {body.get('expires_in')}s): {body['access_token']}")
+    print(
+        f"\n(Access token, for reference — expires in {body.get('expires_in')}s; "
+        "the service will refresh automatically on first use):"
+    )
+    print(body["access_token"])
     return 0
 
 
