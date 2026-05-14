@@ -76,8 +76,10 @@ async def test_single_date_ingest_writes_full_row(db_session):
     whoop_mock.fetch_day.return_value = (whoop_payload, whoop_workouts)
     whoop_mock.close = AsyncMock()
 
-    with patch("health_metrics.jobs.daily_ingest._build_oura_client", return_value=oura_mock), \
-         patch("health_metrics.jobs.daily_ingest._build_whoop_client", return_value=whoop_mock):
+    with patch("health_metrics.jobs.daily_ingest._build_whoop_client",
+               new=AsyncMock(return_value=whoop_mock)), \
+         patch("health_metrics.jobs.daily_ingest._build_oura_client",
+               return_value=oura_mock):
         await run_daily_ingest(day=target_day, user_id="hugo", session=db_session, commit=False)
 
     res = await db_session.execute(
@@ -129,8 +131,10 @@ async def test_ingest_is_idempotent_for_same_date(db_session):
     whoop_mock.fetch_day.return_value = (whoop_payload, workouts_data)
     whoop_mock.close = AsyncMock()
 
-    with patch("health_metrics.jobs.daily_ingest._build_oura_client", return_value=oura_mock), \
-         patch("health_metrics.jobs.daily_ingest._build_whoop_client", return_value=whoop_mock):
+    with patch("health_metrics.jobs.daily_ingest._build_whoop_client",
+               new=AsyncMock(return_value=whoop_mock)), \
+         patch("health_metrics.jobs.daily_ingest._build_oura_client",
+               return_value=oura_mock):
         await run_daily_ingest(day=target_day, user_id="hugo", session=db_session, commit=False)
         await run_daily_ingest(day=target_day, user_id="hugo", session=db_session, commit=False)
 

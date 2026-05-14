@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..models import DailyMetrics, Workout
+from ..models import DailyMetrics, OAuthState, Workout
 from ..sources.oura import OuraClient
 from ..sources.whoop import WhoopClient
 from ..transforms.normalize import build_daily_metrics_row
@@ -28,17 +28,53 @@ def _build_oura_client() -> OuraClient | None:
     return OuraClient(token=settings.oura_personal_token, base_url=settings.oura_base_url)
 
 
-def _build_whoop_client() -> WhoopClient | None:
+async def _build_whoop_client(session: AsyncSession, user_id: str) -> WhoopClient | None:
     settings = get_settings()
-    if not (settings.whoop_client_id and settings.whoop_client_secret and settings.whoop_refresh_token):
+    if not (settings.whoop_client_id and settings.whoop_client_secret):
         return None
+
+    # Look up live refresh token from oauth_state, fall back to .env
+    res = await session.execute(
+        select(OAuthState).where(
+            OAuthState.provider == "whoop",
+            OAuthState.user_id == user_id,
+        )
+    )
+    state = res.scalar_one_or_none()
+    refresh_token = state.refresh_token if state else settings.whoop_refresh_token
+    if not refresh_token:
+        return None
+
+    async def _persist(access: str, refresh: str, expires_at: datetime) -> None:
+        stmt = pg_insert(OAuthState).values(
+            provider="whoop",
+            user_id=user_id,
+            refresh_token=refresh,
+            access_token=access,
+            access_expires_at=expires_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["provider", "user_id"],
+            set_={
+                "refresh_token": refresh,
+                "access_token": access,
+                "access_expires_at": expires_at,
+            },
+        )
+        await session.execute(stmt)
+        # Commit immediately so the rotation is durable even if the rest of
+        # the ingest fails. Without this, a failure post-refresh would lose
+        # the new refresh_token and lock us out of Whoop.
+        await session.commit()
+
     return WhoopClient(
-        access_token="",  # forces a refresh on first call
-        refresh_token=settings.whoop_refresh_token,
+        access_token=state.access_token if state and state.access_token else "",
+        refresh_token=refresh_token,
         client_id=settings.whoop_client_id,
         client_secret=settings.whoop_client_secret,
         base_url=settings.whoop_base_url,
         oauth_url=settings.whoop_oauth_url,
+        on_token_refresh=_persist,
     )
 
 
@@ -77,7 +113,7 @@ async def run_daily_ingest(
         finally:
             await oura_client.close()
 
-    whoop_client = _build_whoop_client()
+    whoop_client = await _build_whoop_client(session, user_id)
     if whoop_client is not None:
         try:
             whoop_payload, whoop_workouts = await whoop_client.fetch_day(day)

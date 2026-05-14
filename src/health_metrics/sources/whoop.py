@@ -108,6 +108,8 @@ class WhoopClient:
             await self._on_token_refresh(self._access_token, self._refresh_token, expires_at)
 
     async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        if not self._access_token:
+            await self._refresh()
         url = f"{self._base_url}/{path.lstrip('/')}"
         headers = {"Authorization": f"Bearer {self._access_token}"}
         resp = await self._http.get(url, params=params, headers=headers)
