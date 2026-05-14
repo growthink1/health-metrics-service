@@ -1,5 +1,6 @@
 """Dashboard REST endpoints (consumed by the Next.js dashboard frontend)."""
 
+import statistics
 from contextlib import asynccontextmanager
 from datetime import date as date_type, datetime, timedelta
 from typing import Any, AsyncIterator
@@ -25,6 +26,15 @@ METRIC_COLUMNS = {
     "sleep_min": "oura_sleep_duration_min",
     "strain": "whoop_day_strain",
     "recovery": "whoop_recovery_score",
+}
+
+ALL_METRIC_DEFS: dict[str, dict[str, str]] = {
+    "hrv": {"column": "oura_hrv_avg", "source_table": "daily_metrics", "z_column": "unified_hrv_z"},
+    "rhr": {"column": "oura_rhr", "source_table": "daily_metrics", "z_column": "unified_rhr_z"},
+    "sleep_min": {"column": "oura_sleep_duration_min", "source_table": "daily_metrics", "z_column": "unified_sleep_z"},
+    "strain": {"column": "whoop_day_strain", "source_table": "daily_metrics", "z_column": None},
+    "recovery": {"column": "whoop_recovery_score", "source_table": "daily_metrics", "z_column": None},
+    "weight_lbs": {"column": "weight_lbs", "source_table": "manual_log", "z_column": None},
 }
 
 
@@ -177,3 +187,94 @@ async def dashboard_grid(
     })
 
     return {"n_days": days, "tiles": tiles}
+
+
+@router.get("/metric/{name}")
+async def metric_drilldown(
+    name: str,
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=14, ge=1, le=365),
+    as_of: str | None = Query(default=None),
+) -> dict[str, Any]:
+    if name not in ALL_METRIC_DEFS:
+        raise HTTPException(status_code=400, detail=f"unknown metric: {name}")
+
+    settings = get_settings()
+    uid = user_id or settings.user_id
+    anchor = _resolve_as_of(as_of)
+    start = anchor - timedelta(days=days - 1)
+    meta = ALL_METRIC_DEFS[name]
+
+    async with _session_factory() as session:
+        if meta["source_table"] == "daily_metrics":
+            res = await session.execute(
+                select(DailyMetrics)
+                .where(DailyMetrics.user_id == uid)
+                .where(DailyMetrics.metric_date >= start)
+                .where(DailyMetrics.metric_date <= anchor)
+                .order_by(DailyMetrics.metric_date.asc())
+            )
+            rows = list(res.scalars().all())
+            series = []
+            for r in rows:
+                v = getattr(r, meta["column"])
+                if v is None:
+                    continue
+                pt = {"date": r.metric_date.isoformat(), "value": float(v)}
+                if meta["z_column"]:
+                    z = getattr(r, meta["z_column"])
+                    pt["z"] = float(z) if z is not None else None
+                series.append(pt)
+        else:  # manual_log
+            res = await session.execute(
+                select(ManualLog)
+                .where(ManualLog.user_id == uid)
+                .where(ManualLog.log_date >= start)
+                .where(ManualLog.log_date <= anchor)
+                .order_by(ManualLog.log_date.asc())
+            )
+            rows = list(res.scalars().all())
+            series = [
+                {"date": r.log_date.isoformat(), "value": float(getattr(r, meta["column"]))}
+                for r in rows
+                if getattr(r, meta["column"]) is not None
+            ]
+
+    values = [pt["value"] for pt in series]
+    if len(values) >= 2:
+        mean = statistics.mean(values)
+        std = statistics.stdev(values) if len(values) > 1 else 0.0
+        # Simple linear slope
+        n = len(values)
+        xs = list(range(n))
+        x_mean = sum(xs) / n
+        y_mean = mean
+        num = sum((xs[i] - x_mean) * (values[i] - y_mean) for i in range(n))
+        den = sum((x - x_mean) ** 2 for x in xs)
+        slope = num / den if den != 0 else 0.0
+    else:
+        mean = values[0] if values else 0.0
+        std = 0.0
+        slope = 0.0
+
+    z_today = None
+    if series and meta.get("z_column"):
+        last = series[-1]
+        z_today = last.get("z")
+
+    return {
+        "metric": name,
+        "n_days": days,
+        "series": series,
+        "stats": {
+            "mean": round(mean, 2),
+            "std": round(std, 2),
+            "slope_per_day": round(slope, 3),
+            "z_today": z_today,
+        },
+        "baseline": {
+            "mean": round(mean, 2),
+            "lower_1sd": round(mean - std, 2),
+            "upper_1sd": round(mean + std, 2),
+        },
+    }
