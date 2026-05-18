@@ -1,4 +1,4 @@
-"""Whoop developer v1 client with OAuth refresh-token rotation."""
+"""Whoop developer v2 client with OAuth refresh-token rotation."""
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -64,7 +64,7 @@ class WhoopClient:
         refresh_token: str,
         client_id: str,
         client_secret: str,
-        base_url: str = "https://api.prod.whoop.com/developer/v1",
+        base_url: str = "https://api.prod.whoop.com/developer/v2",
         oauth_url: str = "https://api.prod.whoop.com/oauth/oauth2/token",
         on_token_refresh: TokenRefreshCallback | None = None,
     ):
@@ -198,7 +198,8 @@ def _kj_to_kcal(kj: float | int | None) -> int | None:
 
 def _parse_workout(w: dict[str, Any], requested_day: date) -> WhoopWorkout:
     score = w.get("score") or {}
-    zd = score.get("zone_duration") or {}
+    # v2 renamed zone_duration → zone_durations (plural); nested keys unchanged.
+    zd = score.get("zone_durations") or {}
     zone_minutes = {
         0: _ms_to_min(zd.get("zone_zero_milli")) or 0,
         1: _ms_to_min(zd.get("zone_one_milli")) or 0,

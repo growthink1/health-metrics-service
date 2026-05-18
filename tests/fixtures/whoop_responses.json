@@ -23,7 +23,7 @@
       "records": [
         {
           "cycle_id": 1234567,
-          "sleep_id": 7654321,
+          "sleep_id": "8e475495-071b-42bd-8067-2664e90dcde4",
           "user_id": 987654,
           "created_at": "2026-05-12T07:30:00.000Z",
           "updated_at": "2026-05-12T07:30:00.000Z",
@@ -43,7 +43,8 @@
     "sleep": {
       "records": [
         {
-          "id": 7654321,
+          "id": "8e475495-071b-42bd-8067-2664e90dcde4",
+          "v1_id": 7654321,
           "user_id": 987654,
           "start": "2026-05-11T23:30:00.000Z",
           "end": "2026-05-12T07:15:00.000Z",
@@ -80,6 +81,7 @@
       "records": [
         {
           "id": "wkt-abc123",
+          "v1_id": 9988776,
           "user_id": 987654,
           "start": "2026-05-12T17:00:00.000Z",
           "end": "2026-05-12T17:45:00.000Z",
@@ -95,7 +97,7 @@
             "distance_meter": 18500,
             "altitude_gain_meter": 120,
             "altitude_change_meter": 5,
-            "zone_duration": {
+            "zone_durations": {
               "zone_zero_milli": 60000,
               "zone_one_milli": 240000,
               "zone_two_milli": 720000,

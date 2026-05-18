@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     whoop_client_secret: Optional[str] = Field(default=None)
     whoop_refresh_token: Optional[str] = Field(default=None)
     whoop_redirect_uri: str = Field(default="http://localhost:8000/whoop/callback")
-    whoop_base_url: str = Field(default="https://api.prod.whoop.com/developer/v1")
+    whoop_base_url: str = Field(default="https://api.prod.whoop.com/developer/v2")
     whoop_oauth_url: str = Field(default="https://api.prod.whoop.com/oauth/oauth2/token")
 
     # Anthropic (dashboard narration)

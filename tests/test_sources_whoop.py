@@ -24,16 +24,16 @@ async def test_whoop_client_fetches_and_normalizes(whoop_fixture):
     day = "2026-05-12"
     fx = whoop_fixture[day]
 
-    respx.get("https://api.prod.whoop.com/developer/v1/cycle").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/cycle").mock(
         return_value=httpx.Response(200, json=fx["cycle"])
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/recovery").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/recovery").mock(
         return_value=httpx.Response(200, json=fx["recovery"])
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/activity/sleep").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/activity/sleep").mock(
         return_value=httpx.Response(200, json=fx["sleep"])
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/activity/workout").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/activity/workout").mock(
         return_value=httpx.Response(200, json=fx["workout"])
     )
 
@@ -86,18 +86,18 @@ async def test_whoop_client_refreshes_on_401():
         refreshed_tokens["expires_at"] = expires_at
 
     # First /cycle call → 401, then refresh, then /cycle works.
-    cycle_route = respx.get("https://api.prod.whoop.com/developer/v1/cycle")
+    cycle_route = respx.get("https://api.prod.whoop.com/developer/v2/cycle")
     cycle_route.side_effect = [
         httpx.Response(401, json={"error": "expired"}),
         httpx.Response(200, json={"records": [], "next_token": None}),
     ]
-    respx.get("https://api.prod.whoop.com/developer/v1/recovery").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/recovery").mock(
         return_value=httpx.Response(200, json={"records": [], "next_token": None})
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/activity/sleep").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/activity/sleep").mock(
         return_value=httpx.Response(200, json={"records": [], "next_token": None})
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/activity/workout").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/activity/workout").mock(
         return_value=httpx.Response(200, json={"records": [], "next_token": None})
     )
     respx.post("https://api.prod.whoop.com/oauth/oauth2/token").mock(
@@ -129,7 +129,7 @@ async def test_whoop_client_refreshes_on_401():
 @respx.mock
 async def test_whoop_partial_failure_recovers_remaining_endpoints():
     """If one endpoint 404s, the others still produce data."""
-    respx.get("https://api.prod.whoop.com/developer/v1/cycle").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/cycle").mock(
         return_value=httpx.Response(200, json={"records": [{
             "id": 999, "user_id": 1, "start": "2026-05-13T07:00:00.000Z",
             "end": "2026-05-14T07:00:00.000Z", "timezone_offset": "-04:00",
@@ -137,13 +137,13 @@ async def test_whoop_partial_failure_recovers_remaining_endpoints():
             "score": {"strain": 11.5, "kilojoule": 8000.0, "average_heart_rate": 88, "max_heart_rate": 150},
         }], "next_token": None})
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/recovery").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/recovery").mock(
         return_value=httpx.Response(404, text="HTTP 404 Not Found")
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/activity/sleep").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/activity/sleep").mock(
         return_value=httpx.Response(200, json={"records": [], "next_token": None})
     )
-    respx.get("https://api.prod.whoop.com/developer/v1/activity/workout").mock(
+    respx.get("https://api.prod.whoop.com/developer/v2/activity/workout").mock(
         return_value=httpx.Response(200, json={"records": [], "next_token": None})
     )
 
