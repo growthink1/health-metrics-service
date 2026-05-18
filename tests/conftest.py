@@ -1,12 +1,22 @@
 """Pytest fixtures — async DB session with per-test rollback."""
 
+import uuid
 from typing import AsyncIterator
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from health_metrics.config import get_settings
+
+
+@pytest.fixture
+def test_user_id() -> str:
+    """Per-test unique user_id so tests don't collide with real data in the
+    shared dev DB. Use this instead of hard-coding 'hugo' in any test that
+    inserts or queries by user_id."""
+    return f"test_{uuid.uuid4().hex[:8]}"
 
 
 @pytest_asyncio.fixture

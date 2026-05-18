@@ -63,15 +63,14 @@ async def test_generate_narration_calls_anthropic_and_caches(db_session):
 
 
 @pytest.mark.asyncio
-async def test_generate_narration_returns_none_when_api_key_missing(db_session, monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    # Re-cache settings to pick up the delenv
-    from health_metrics.config import get_settings
-    get_settings.cache_clear()
-
+async def test_generate_narration_returns_none_when_api_key_missing(db_session):
     signals = _signals()
-    result = await generate_narration(
-        db_session, user_id="hugo", metric_date=date(2026, 5, 13),
-        recommendation="maintenance", signals=signals, commit=False,
-    )
+    # _build_client returns None when no API key is configured. Patch it
+    # directly rather than munging env vars (env_ignore_empty makes that
+    # unreliable — Settings can still read a real key from .env).
+    with patch("health_metrics.narration._build_client", return_value=None):
+        result = await generate_narration(
+            db_session, user_id="hugo", metric_date=date(2026, 5, 13),
+            recommendation="maintenance", signals=signals, commit=False,
+        )
     assert result is None

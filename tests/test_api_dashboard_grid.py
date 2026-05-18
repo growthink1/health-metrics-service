@@ -6,8 +6,8 @@ from sqlalchemy import text
 
 
 @pytest.mark.asyncio
-async def test_dashboard_grid_returns_six_tiles(db_session, monkeypatch):
-    # Seed 14 days of data for hugo
+async def test_dashboard_grid_returns_six_tiles(db_session, monkeypatch, test_user_id):
+    # Seed 14 days of data
     for i in range(14):
         d = date(2026, 5, 1) + timedelta(days=i)
         await db_session.execute(text("""
@@ -16,12 +16,12 @@ async def test_dashboard_grid_returns_six_tiles(db_session, monkeypatch):
                 whoop_day_strain, whoop_recovery_score,
                 oura_status, whoop_status)
             VALUES (:u, :d, :hrv, :rhr, :sl, :st, :rec, 'ok', 'ok')
-        """), {"u": "hugo", "d": d, "hrv": 45 + i, "rhr": 60 - (i % 3),
+        """), {"u": test_user_id, "d": d, "hrv": 45 + i, "rhr": 60 - (i % 3),
                "sl": 380 + (i * 5), "st": 10 + (i * 0.3), "rec": 55 + i})
         await db_session.execute(text(
             "INSERT INTO manual_log (user_id, log_date, weight_lbs) "
             "VALUES (:u, :d, :w)"
-        ), {"u": "hugo", "d": d, "w": 220 - (i * 0.1)})
+        ), {"u": test_user_id, "d": d, "w": 220 - (i * 0.1)})
     await db_session.flush()
 
     from contextlib import asynccontextmanager
@@ -35,7 +35,7 @@ async def test_dashboard_grid_returns_six_tiles(db_session, monkeypatch):
 
     from health_metrics.main import app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/dashboard/grid?user_id=hugo&days=14&as_of=2026-05-14")
+        resp = await client.get(f"/api/dashboard/grid?user_id={test_user_id}&days=14&as_of=2026-05-14")
 
     assert resp.status_code == 200
     body = resp.json()

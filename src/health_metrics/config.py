@@ -12,6 +12,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        env_ignore_empty=True,
     )
 
     # Database
@@ -41,7 +42,7 @@ class Settings(BaseSettings):
 
     # Anthropic (dashboard narration)
     anthropic_api_key: Optional[str] = Field(default=None)
-    narration_model: str = Field(default="claude-3-5-haiku-latest")
+    narration_model: str = Field(default="claude-haiku-4-5-20251001")
     narration_max_tokens: int = Field(default=80)
 
     # CORS (dashboard frontend)

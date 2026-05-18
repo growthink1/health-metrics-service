@@ -22,6 +22,6 @@ def test_settings_anthropic_defaults(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
     get_settings.cache_clear()
     s = get_settings()
-    assert s.narration_model == "claude-3-5-haiku-latest"
+    assert s.narration_model == "claude-haiku-4-5-20251001"
     assert s.narration_max_tokens == 80
     assert s.cors_allowed_origins == ["http://localhost:3000"]

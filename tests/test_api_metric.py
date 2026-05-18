@@ -6,14 +6,14 @@ from sqlalchemy import text
 
 
 @pytest.mark.asyncio
-async def test_metric_hrv_returns_series_with_stats(db_session, monkeypatch):
+async def test_metric_hrv_returns_series_with_stats(db_session, monkeypatch, test_user_id):
     for i in range(14):
         d = date(2026, 5, 1) + timedelta(days=i)
         await db_session.execute(text("""
             INSERT INTO daily_metrics (user_id, metric_date,
                 oura_hrv_avg, unified_hrv_z, oura_status, whoop_status)
             VALUES (:u, :d, :hrv, :z, 'ok', 'ok')
-        """), {"u": "hugo", "d": d, "hrv": 45 + (i % 7), "z": -0.5 + (i * 0.05)})
+        """), {"u": test_user_id, "d": d, "hrv": 45 + (i % 7), "z": -0.5 + (i * 0.05)})
     await db_session.flush()
 
     from contextlib import asynccontextmanager
@@ -27,7 +27,7 @@ async def test_metric_hrv_returns_series_with_stats(db_session, monkeypatch):
 
     from health_metrics.main import app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/metric/hrv?user_id=hugo&days=14&as_of=2026-05-14")
+        resp = await client.get(f"/api/metric/hrv?user_id={test_user_id}&days=14&as_of=2026-05-14")
 
     assert resp.status_code == 200
     body = resp.json()

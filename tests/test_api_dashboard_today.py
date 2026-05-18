@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 
 @pytest.mark.asyncio
-async def test_dashboard_today_returns_recommendation_and_today_strip(db_session, monkeypatch):
+async def test_dashboard_today_returns_recommendation_and_today_strip(db_session, monkeypatch, test_user_id):
     # Seed 3 days of daily_metrics + manual_log
     await db_session.execute(text("""
         INSERT INTO daily_metrics (user_id, metric_date,
@@ -16,14 +16,14 @@ async def test_dashboard_today_returns_recommendation_and_today_strip(db_session
             unified_hrv_z, unified_rhr_z, whoop_sleep_debt_min,
             whoop_day_strain, oura_status, whoop_status, ingestion_complete)
         VALUES
-            ('hugo', :d1, 45, 60, 400, -1.0, 0.5, 200, 12.0, 'ok', 'ok', TRUE),
-            ('hugo', :d2, 47, 58, 410, -0.8, 0.3, 180, 11.0, 'ok', 'ok', TRUE),
-            ('hugo', :d3, 46, 59, 380, -1.2, 0.7, 220, 13.0, 'ok', 'ok', TRUE)
-    """), {"d1": date(2026, 5, 11), "d2": date(2026, 5, 12), "d3": date(2026, 5, 13)})
+            (:u, :d1, 45, 60, 400, -1.0, 0.5, 200, 12.0, 'ok', 'ok', TRUE),
+            (:u, :d2, 47, 58, 410, -0.8, 0.3, 180, 11.0, 'ok', 'ok', TRUE),
+            (:u, :d3, 46, 59, 380, -1.2, 0.7, 220, 13.0, 'ok', 'ok', TRUE)
+    """), {"u": test_user_id, "d1": date(2026, 5, 11), "d2": date(2026, 5, 12), "d3": date(2026, 5, 13)})
     await db_session.execute(text(
         "INSERT INTO manual_log (user_id, log_date, subjective_energy, subjective_mood, subjective_hunger) "
-        "VALUES ('hugo', :d, 6, 7, 5)"
-    ), {"d": date(2026, 5, 13)})
+        "VALUES (:u, :d, 6, 7, 5)"
+    ), {"u": test_user_id, "d": date(2026, 5, 13)})
     await db_session.flush()
 
     # Patch _session_factory so the route uses our test session.
@@ -38,7 +38,7 @@ async def test_dashboard_today_returns_recommendation_and_today_strip(db_session
 
     from health_metrics.main import app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/dashboard/today?user_id=hugo&as_of=2026-05-13")
+        resp = await client.get(f"/api/dashboard/today?user_id={test_user_id}&as_of=2026-05-13")
 
     assert resp.status_code == 200
     body = resp.json()
