@@ -1,1 +1,1 @@
-web: uvicorn src.health_metrics.main:app --host 0.0.0.0 --port $PORT --workers 1
+web: python -m uvicorn src.health_metrics.main:app --host 0.0.0.0 --port $PORT --workers 1
