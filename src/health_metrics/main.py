@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
+from .jobs.scheduler import build_scheduler
 from .routes import health as health_route, ingest as ingest_route, api as api_route
 
 
@@ -46,3 +47,20 @@ app.include_router(ingest_route.router)
 app.include_router(api_route.router)
 
 log.info("app_initialized", version="0.1.0", user_id=settings.user_id)
+
+_scheduler = None
+
+
+@app.on_event("startup")
+async def _start_scheduler():
+    global _scheduler
+    _scheduler = build_scheduler(settings.user_id)
+    _scheduler.start()
+
+
+@app.on_event("shutdown")
+async def _stop_scheduler():
+    global _scheduler
+    if _scheduler is not None:
+        _scheduler.shutdown(wait=False)
+        _scheduler = None
