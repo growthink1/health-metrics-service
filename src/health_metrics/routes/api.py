@@ -30,6 +30,9 @@ METRIC_COLUMNS = {
     "recovery": "whoop_recovery_score",
 }
 
+# When the primary Oura column is null (e.g. Oura doesn't return sleep sessions
+# for this user), fall back to the Whoop equivalent so the tile + drilldown
+# render real data instead of an empty series.
 ALL_METRIC_DEFS: dict[str, dict[str, str]] = {
     "hrv": {"column": "oura_hrv_avg", "source_table": "daily_metrics", "z_column": "unified_hrv_z"},
     "rhr": {"column": "oura_rhr", "source_table": "daily_metrics", "z_column": "unified_rhr_z"},
@@ -38,6 +41,44 @@ ALL_METRIC_DEFS: dict[str, dict[str, str]] = {
     "recovery": {"column": "whoop_recovery_score", "source_table": "daily_metrics", "z_column": None},
     "weight_lbs": {"column": "weight_lbs", "source_table": "manual_log", "z_column": None},
 }
+
+
+def _whoop_sleep_actual_min(whoop_raw: dict[str, Any] | None) -> int | None:
+    """Derive 'minutes slept' from the raw Whoop v2 stage_summary if present.
+
+    Whoop's stage_summary has total_in_bed_time_milli + total_awake_time_milli;
+    actual sleep = in_bed - awake. Returns None on any missing field.
+    """
+    try:
+        stage = whoop_raw["sleep"]["records"][0]["score"]["stage_summary"]
+        in_bed = stage.get("total_in_bed_time_milli")
+        awake = stage.get("total_awake_time_milli") or 0
+        if in_bed is None:
+            return None
+        return int((in_bed - awake) / 60000)
+    except (TypeError, KeyError, IndexError):
+        return None
+
+
+def _read_metric(r: DailyMetrics, metric: str) -> float | None:
+    """Read a metric value off a DailyMetrics row, falling back from Oura → Whoop
+    when the primary Oura field is null. Returns float or None."""
+    if metric == "hrv":
+        v = r.oura_hrv_avg if r.oura_hrv_avg is not None else r.whoop_hrv_ms
+    elif metric == "rhr":
+        v = r.oura_rhr if r.oura_rhr is not None else r.whoop_rhr
+    elif metric == "sleep_min":
+        v = r.oura_sleep_duration_min if r.oura_sleep_duration_min is not None \
+            else _whoop_sleep_actual_min(r.whoop_raw)
+    elif metric == "strain":
+        v = r.whoop_day_strain
+    elif metric == "recovery":
+        v = r.whoop_recovery_score
+    else:
+        v = None
+    if v is None:
+        return None
+    return float(v)
 
 
 # Indirection so tests can substitute the session factory
@@ -163,16 +204,12 @@ async def dashboard_grid(
         ml_rows = list(res.scalars().all())
 
     tiles = []
-    for metric, col in METRIC_COLUMNS.items():
-        series = [
-            {"date": r.metric_date.isoformat(), "value": getattr(r, col)}
-            for r in dm_rows
-            if getattr(r, col) is not None
-        ]
-        # convert Decimal to float for JSON
-        for pt in series:
-            if pt["value"] is not None and not isinstance(pt["value"], (int, float)):
-                pt["value"] = float(pt["value"])
+    for metric in METRIC_COLUMNS:
+        series = []
+        for r in dm_rows:
+            v = _read_metric(r, metric)
+            if v is not None:
+                series.append({"date": r.metric_date.isoformat(), "value": v})
         current = series[-1]["value"] if series else None
         tiles.append({"metric": metric, "current": current, "series": series})
 
@@ -219,10 +256,10 @@ async def metric_drilldown(
             rows = list(res.scalars().all())
             series = []
             for r in rows:
-                v = getattr(r, meta["column"])
+                v = _read_metric(r, name)
                 if v is None:
                     continue
-                pt = {"date": r.metric_date.isoformat(), "value": float(v)}
+                pt = {"date": r.metric_date.isoformat(), "value": v}
                 if meta["z_column"]:
                     z = getattr(r, meta["z_column"])
                     pt["z"] = float(z) if z is not None else None
