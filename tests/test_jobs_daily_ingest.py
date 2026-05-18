@@ -64,7 +64,7 @@ def _whoop_payload_and_workouts():
 
 
 @pytest.mark.asyncio
-async def test_single_date_ingest_writes_full_row(db_session):
+async def test_single_date_ingest_writes_full_row(db_session, test_user_id):
     target_day = date(2026, 5, 12)
 
     oura_mock = AsyncMock()
@@ -80,11 +80,11 @@ async def test_single_date_ingest_writes_full_row(db_session):
                new=AsyncMock(return_value=whoop_mock)), \
          patch("health_metrics.jobs.daily_ingest._build_oura_client",
                return_value=oura_mock):
-        await run_daily_ingest(day=target_day, user_id="hugo", session=db_session, commit=False)
+        await run_daily_ingest(day=target_day, user_id=test_user_id, session=db_session, commit=False)
 
     res = await db_session.execute(
         select(DailyMetrics).where(
-            DailyMetrics.user_id == "hugo",
+            DailyMetrics.user_id == test_user_id,
             DailyMetrics.metric_date == target_day,
         )
     )
@@ -104,7 +104,7 @@ async def test_single_date_ingest_writes_full_row(db_session):
 
     res = await db_session.execute(
         select(Workout).where(
-            Workout.user_id == "hugo",
+            Workout.user_id == test_user_id,
             Workout.workout_date == target_day,
         )
     )
@@ -119,7 +119,7 @@ async def test_single_date_ingest_writes_full_row(db_session):
 
 
 @pytest.mark.asyncio
-async def test_ingest_is_idempotent_for_same_date(db_session):
+async def test_ingest_is_idempotent_for_same_date(db_session, test_user_id):
     target_day = date(2026, 5, 12)
 
     oura_mock = AsyncMock()
@@ -135,12 +135,12 @@ async def test_ingest_is_idempotent_for_same_date(db_session):
                new=AsyncMock(return_value=whoop_mock)), \
          patch("health_metrics.jobs.daily_ingest._build_oura_client",
                return_value=oura_mock):
-        await run_daily_ingest(day=target_day, user_id="hugo", session=db_session, commit=False)
-        await run_daily_ingest(day=target_day, user_id="hugo", session=db_session, commit=False)
+        await run_daily_ingest(day=target_day, user_id=test_user_id, session=db_session, commit=False)
+        await run_daily_ingest(day=target_day, user_id=test_user_id, session=db_session, commit=False)
 
     res = await db_session.execute(
         select(DailyMetrics).where(
-            DailyMetrics.user_id == "hugo",
+            DailyMetrics.user_id == test_user_id,
             DailyMetrics.metric_date == target_day,
         )
     )
@@ -148,7 +148,7 @@ async def test_ingest_is_idempotent_for_same_date(db_session):
     assert len(rows) == 1
 
     res = await db_session.execute(
-        select(Workout).where(Workout.user_id == "hugo", Workout.workout_date == target_day)
+        select(Workout).where(Workout.user_id == test_user_id, Workout.workout_date == target_day)
     )
     workouts_db = res.scalars().all()
     assert len(workouts_db) == 1
