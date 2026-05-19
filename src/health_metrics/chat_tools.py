@@ -1,22 +1,26 @@
 """Chat tool registry + handlers.
 
-Five tools exposed to Anthropic for the /api/chat endpoint:
-- 3 write tools (log_subjective, log_weight, log_nutrition) — upsert manual_log rows
-- 2 read tools (get_recent_metrics, get_workouts) — fetch recent data for context
+Nine tools exposed to Anthropic for the /api/chat endpoint:
+- 6 write tools (log_subjective, log_weight, log_nutrition, log_meal,
+  log_manual_workout, log_workout_set) — upsert/insert rows
+- 3 read tools (get_recent_metrics, get_workouts, get_recent_meals)
+  — fetch recent data for context
 
 Write tools NEVER run server-side without a tool_confirmation: approved=True
 arriving from the client. The chat route enforces that policy; this module
 just exposes the handlers + definitions.
 """
 
-from datetime import date as date_type, timedelta
+from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import DailyMetrics, ManualLog, Workout
+from .jobs.recompute import recompute_day_aggregate
+from .models import DailyMetrics, ManualLog, Meal, Workout, WorkoutSet
 from .routes.api import _read_metric  # reuse the Oura→Whoop fallback
 
 
@@ -82,6 +86,67 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "carbs_g": {"type": "integer", "minimum": 0, "maximum": 2000},
             },
             "required": ["date"],
+        },
+    },
+    {
+        "name": "log_meal",
+        "description": "Write a meal entry (kcal + macros + optional photo). The user MUST confirm before this runs. If photo_path is set, it must be a bucket key previously returned by the upload flow.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "ISO yyyy-mm-dd"},
+                "time": {"type": "string", "description": "ISO HH:MM, optional"},
+                "meal_name": {"type": "string"},
+                "kcal": {"type": "integer", "minimum": 0, "maximum": 10000},
+                "protein_g": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "fat_g": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "carbs_g": {"type": "integer", "minimum": 0, "maximum": 2000},
+                "notes": {"type": "string"},
+                "photo_path": {"type": "string"},
+            },
+            "required": ["date", "kcal"],
+        },
+    },
+    {
+        "name": "log_manual_workout",
+        "description": "Log a workout the user did off-strap (Whoop did not capture it). The user MUST confirm before this runs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string"},
+                "sport_name": {"type": "string"},
+                "duration_min": {"type": "integer", "minimum": 1, "maximum": 600},
+                "strain": {"type": "number", "minimum": 0, "maximum": 21},
+                "kcal": {"type": "integer"},
+                "notes": {"type": "string"},
+            },
+            "required": ["date", "sport_name", "duration_min"],
+        },
+    },
+    {
+        "name": "log_workout_set",
+        "description": "Log one set for a strength workout. Pass workout_id when you know it; otherwise pass workout_date and the set attaches to the most recent workout on that date (or a placeholder manual workout is created if none exists).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workout_id": {"type": "integer"},
+                "workout_date": {"type": "string"},
+                "exercise": {"type": "string"},
+                "reps": {"type": "integer", "minimum": 1, "maximum": 100},
+                "weight_lbs": {"type": "number", "minimum": 0, "maximum": 2000},
+                "rpe": {"type": "number", "minimum": 1, "maximum": 10},
+                "notes": {"type": "string"},
+            },
+            "required": ["exercise", "reps"],
+        },
+    },
+    {
+        "name": "get_recent_meals",
+        "description": "Read the user's meals for the last N days. Read-only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"days": {"type": "integer", "minimum": 1, "maximum": 90}},
+            "required": ["days"],
         },
     },
 ]
@@ -217,14 +282,149 @@ async def get_workouts(
     return {"ok": True, "result": {"workouts": workouts}}
 
 
+async def log_meal(
+    session: AsyncSession, user_id: str, date: Any,
+    kcal: int, time: Optional[str] = None, meal_name: Optional[str] = None,
+    protein_g: Optional[int] = None, fat_g: Optional[int] = None,
+    carbs_g: Optional[int] = None, notes: Optional[str] = None,
+    photo_path: Optional[str] = None,
+) -> dict[str, Any]:
+    d = _parse_date(date)
+    if d is None:
+        return {"ok": False, "error": f"invalid date: {date!r}"}
+    from datetime import time as time_type
+    t = None
+    if time:
+        try:
+            t = time_type.fromisoformat(time)
+        except ValueError:
+            return {"ok": False, "error": f"invalid time: {time!r}"}
+
+    meal = Meal(
+        user_id=user_id, meal_date=d, meal_time=t, meal_name=meal_name,
+        kcal=kcal, protein_g=protein_g, fat_g=fat_g, carbs_g=carbs_g,
+        notes=notes, photo_path=photo_path, source="chat",
+    )
+    session.add(meal)
+    await session.flush()
+    meal_id = meal.id
+    await recompute_day_aggregate(session, user_id, d)
+    return {"ok": True, "result": {"meal_id": meal_id, "logged_date": d.isoformat(), "kcal": kcal}}
+
+
+async def log_manual_workout(
+    session: AsyncSession, user_id: str, date: Any,
+    sport_name: str, duration_min: int,
+    strain: Optional[float] = None, kcal: Optional[int] = None, notes: Optional[str] = None,
+) -> dict[str, Any]:
+    d = _parse_date(date)
+    if d is None:
+        return {"ok": False, "error": f"invalid date: {date!r}"}
+    w = Workout(
+        user_id=user_id, workout_date=d, source="manual", source_id=uuid4().hex,
+        workout_type=sport_name,
+        started_at=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+        duration_min=duration_min, strain=strain, kcal=kcal,
+        raw={"notes": notes} if notes else None,
+    )
+    session.add(w)
+    await session.flush()
+    workout_id = w.id
+    await session.commit()
+    return {"ok": True, "result": {"workout_id": workout_id, "logged_date": d.isoformat(), "type": sport_name}}
+
+
+async def log_workout_set(
+    session: AsyncSession, user_id: str,
+    exercise: str, reps: int,
+    workout_id: Optional[int] = None, workout_date: Optional[str] = None,
+    weight_lbs: Optional[float] = None, rpe: Optional[float] = None,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    target_wid = workout_id
+    if target_wid is None:
+        d = _parse_date(workout_date) if workout_date else date_type.today()
+        if d is None:
+            return {"ok": False, "error": f"invalid workout_date: {workout_date!r}"}
+        latest = (await session.execute(
+            select(Workout).where(Workout.user_id == user_id, Workout.workout_date == d)
+            .order_by(Workout.started_at.desc()).limit(1)
+        )).scalar_one_or_none()
+        if latest is None:
+            placeholder = Workout(
+                user_id=user_id, workout_date=d, source="manual", source_id=uuid4().hex,
+                workout_type="strength",
+                started_at=datetime(d.year, d.month, d.day, 12, 0, tzinfo=timezone.utc),
+                duration_min=0,
+            )
+            session.add(placeholder)
+            await session.flush()
+            target_wid = placeholder.id
+        else:
+            target_wid = latest.id
+
+    max_n = (await session.execute(
+        select(func.max(WorkoutSet.set_number))
+        .where(WorkoutSet.workout_id == target_wid)
+        .where(WorkoutSet.exercise == exercise)
+    )).scalar()
+    next_n = (max_n or 0) + 1
+
+    s = WorkoutSet(
+        user_id=user_id, workout_id=target_wid, set_number=next_n,
+        exercise=exercise, reps=reps, weight_lbs=weight_lbs, rpe=rpe, notes=notes,
+    )
+    session.add(s)
+    await session.flush()
+    set_id = s.id
+    await session.commit()
+    return {"ok": True, "result": {
+        "set_id": set_id, "workout_id": target_wid, "set_number": next_n,
+        "exercise": exercise, "reps": reps,
+    }}
+
+
+async def get_recent_meals(
+    session: AsyncSession, user_id: str, days: int,
+    anchor: date_type | None = None,
+) -> dict[str, Any]:
+    anchor = anchor or date_type.today()
+    start = anchor - timedelta(days=days - 1)
+    res = await session.execute(
+        select(Meal)
+        .where(Meal.user_id == user_id)
+        .where(Meal.meal_date >= start)
+        .where(Meal.meal_date <= anchor)
+        .order_by(Meal.meal_date.asc(), Meal.created_at.asc())
+    )
+    meals = [
+        {
+            "date": m.meal_date.isoformat(),
+            "time": m.meal_time.isoformat() if m.meal_time else None,
+            "meal_name": m.meal_name,
+            "kcal": m.kcal,
+            "protein_g": m.protein_g,
+            "fat_g": m.fat_g,
+            "carbs_g": m.carbs_g,
+            "has_photo": bool(m.photo_path),
+        }
+        for m in res.scalars().all()
+    ]
+    return {"ok": True, "result": {"meals": meals}}
+
+
 # Dispatch table — chat route looks up tool name → handler.
 TOOL_HANDLERS = {
     "get_recent_metrics": get_recent_metrics,
     "get_workouts": get_workouts,
+    "get_recent_meals": get_recent_meals,
     "log_subjective": log_subjective,
     "log_weight": log_weight,
     "log_nutrition": log_nutrition,
+    "log_meal": log_meal,
+    "log_manual_workout": log_manual_workout,
+    "log_workout_set": log_workout_set,
 }
 
-READ_TOOLS = {"get_recent_metrics", "get_workouts"}
-WRITE_TOOLS = {"log_subjective", "log_weight", "log_nutrition"}
+READ_TOOLS = {"get_recent_metrics", "get_workouts", "get_recent_meals"}
+WRITE_TOOLS = {"log_subjective", "log_weight", "log_nutrition", "log_meal", "log_manual_workout", "log_workout_set"}
