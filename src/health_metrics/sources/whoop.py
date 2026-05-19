@@ -214,8 +214,18 @@ def _parse_workout(w: dict[str, Any], requested_day: date) -> WhoopWorkout:
     end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
     duration_min = int((end_dt - start_dt).total_seconds() / 60)
     workout_date = start_dt.date()
+    # Prefer Whoop v2's sport_name field — it's the authoritative human label
+    # Whoop publishes (e.g. "weightlifting", "cycling", "running"). The
+    # SPORT_ID_TO_TYPE fallback dict has stale v1 sport_id mappings — keep it
+    # only as a safety net for records where sport_name is missing.
     sport_id = w.get("sport_id")
-    workout_type = SPORT_ID_TO_TYPE.get(sport_id) if sport_id is not None else None
+    sport_name = w.get("sport_name")
+    if sport_name:
+        workout_type = sport_name
+    elif sport_id is not None:
+        workout_type = SPORT_ID_TO_TYPE.get(sport_id)
+    else:
+        workout_type = None
     return WhoopWorkout(
         source_id=str(w["id"]),
         workout_date=workout_date,
