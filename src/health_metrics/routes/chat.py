@@ -17,6 +17,7 @@ Lifecycle:
     - message_stop → data: {"type":"done"}
 """
 
+import base64
 import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -32,6 +33,7 @@ from ..chat_prompts import build_system_prompt
 from ..chat_tools import TOOL_DEFINITIONS, TOOL_HANDLERS, WRITE_TOOLS
 from ..config import get_settings
 from ..db import AsyncSessionLocal
+from ..storage import get_storage
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
@@ -82,6 +84,42 @@ async def chat(req: ChatRequest):
         async with _session_factory() as session:
             # 1. Handle confirmation: execute write tool + append tool_result to history
             messages = list(req.messages)
+
+            # 1a. Image preprocessing: any image blocks in user messages get
+            # uploaded to the bucket; record their keys for the system prompt.
+            image_hints: list[str] = []
+            store = get_storage()
+            for msg in messages:
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not (isinstance(block, dict) and block.get("type") == "image"):
+                        continue
+                    src = block.get("source") or {}
+                    if src.get("type") != "base64":
+                        continue
+                    media = src.get("media_type", "image/jpeg")
+                    if "png" in media:
+                        ext = "png"
+                    elif "webp" in media:
+                        ext = "webp"
+                    else:
+                        ext = "jpg"
+                    try:
+                        raw = base64.b64decode(src.get("data", ""))
+                    except Exception:
+                        continue
+                    if store is None:
+                        # Storage not configured; still pass the image to Anthropic
+                        # so vision works, but no key to thread into the prompt.
+                        continue
+                    try:
+                        key = store.upload_with_sha(raw, prefix="meals", ext=ext)
+                        image_hints.append(key)
+                    except Exception:
+                        log.exception("chat_image_upload_failed")
+
             if req.tool_confirmation is not None:
                 # Find the matching tool_use block in the latest assistant message
                 tool_use_block = _find_tool_use(messages, req.tool_confirmation.id)
@@ -114,7 +152,7 @@ async def chat(req: ChatRequest):
                 })
 
             # 2. Build the system prompt + call Anthropic
-            system = await build_system_prompt(session, uid)
+            system = await build_system_prompt(session, uid, image_hints=image_hints or None)
             try:
                 async with client.messages.stream(
                     model=settings.narration_model,

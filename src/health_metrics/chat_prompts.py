@@ -22,6 +22,7 @@ async def build_system_prompt(
     session: AsyncSession,
     user_id: str,
     anchor: date_type | None = None,
+    image_hints: list[str] | None = None,
 ) -> str:
     """Compose the system prompt for the /api/chat Anthropic call."""
     anchor = anchor or date_type.today()
@@ -56,7 +57,7 @@ async def build_system_prompt(
 
     tool_names = ", ".join(t["name"] for t in TOOL_DEFINITIONS)
 
-    return f"""You are a recovery + training-readiness coach for the user of health-metrics, a personal Whoop + Oura analytics dashboard. The user is a single individual (Hugo); this is a private single-user tool.
+    base = f"""You are a recovery + training-readiness coach for the user of health-metrics, a personal Whoop + Oura analytics dashboard. The user is a single individual (Hugo); this is a private single-user tool.
 
 Today is {anchor.isoformat()}.
 
@@ -85,3 +86,14 @@ Behavior rules:
 - If the user asks for advice, give it briefly. You are a coach, not a doctor; if something looks medically concerning, suggest they talk to their physician.
 - Use the read tools (get_recent_metrics, get_workouts) only if the data above doesn't cover what they're asking. The 30-day window is usually enough.
 """
+
+    image_block = ""
+    if image_hints:
+        keys = "\n".join(f"  - {k}" for k in image_hints)
+        image_block = (
+            f"\n\nThe user attached image(s) in this message. They have been saved to bucket key(s):\n{keys}\n"
+            "If you decide to call `log_meal` based on image content, pass the bucket key as `photo_path` "
+            "so the meal row references the saved photo."
+        )
+
+    return base + image_block

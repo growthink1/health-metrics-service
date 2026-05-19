@@ -153,3 +153,72 @@ async def test_chat_executes_write_after_confirmation(db_session, monkeypatch, t
         select(ManualLog).where(ManualLog.user_id == test_user_id)
     )).scalar_one()
     assert float(row.weight_lbs) == 218
+
+
+import base64
+from unittest.mock import MagicMock
+
+
+@pytest.mark.asyncio
+async def test_chat_multimodal_uploads_image_and_passes_through(db_session, monkeypatch, test_user_id):
+    """A user message with an image block should:
+       1. Upload the bytes to bucket at meals/<sha>.jpg
+       2. Append a system-prompt note with that key
+       3. Forward the image block unchanged to Anthropic
+    """
+    from health_metrics.routes import chat as chat_route
+
+    @asynccontextmanager
+    async def _ctx():
+        yield db_session
+    monkeypatch.setattr(chat_route, "_session_factory", lambda: _ctx())
+
+    fake_storage = MagicMock()
+    fake_storage.upload_with_sha.return_value = "meals/sha_abc123.jpg"
+    monkeypatch.setattr(chat_route, "get_storage", lambda: fake_storage)
+
+    captured_call = {}
+
+    def fake_stream(**kwargs):
+        captured_call.update(kwargs)
+        return _FakeAnthropicMessageStream([
+            type("E", (), {"type": "content_block_delta", "delta": type("D", (), {"type": "text_delta", "text": "looks like dinner"})()})(),
+            type("E", (), {"type": "message_stop"})(),
+        ])
+
+    fake_client = AsyncMock()
+    fake_messages = AsyncMock()
+    fake_messages.stream = fake_stream
+    fake_client.messages = fake_messages
+    monkeypatch.setattr(chat_route, "_build_anthropic_client", lambda: fake_client)
+
+    img_bytes = b"\xff\xd8\xff fakejpegbytes"
+    img_b64 = base64.b64encode(img_bytes).decode("ascii")
+
+    from health_metrics.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/chat", json={
+            "user_id": test_user_id,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "log this dinner"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}},
+                ],
+            }],
+        })
+
+    assert resp.status_code == 200
+    # Bucket upload happened with the raw bytes
+    fake_storage.upload_with_sha.assert_called_once()
+    args, kwargs = fake_storage.upload_with_sha.call_args
+    actual_data = args[0] if args else kwargs.get("data")
+    assert actual_data == img_bytes
+    # The image block is forwarded UNCHANGED to Anthropic
+    msgs = captured_call.get("messages", [])
+    assert len(msgs) == 1
+    content = msgs[0]["content"]
+    assert any(b.get("type") == "image" for b in content)
+    # The system prompt mentions the bucket key
+    system = captured_call.get("system", "")
+    assert "meals/sha_abc123.jpg" in system
