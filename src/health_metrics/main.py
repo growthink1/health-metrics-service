@@ -10,6 +10,7 @@ from .config import get_settings
 from .jobs.scheduler import build_scheduler
 from .routes import health as health_route, ingest as ingest_route, api as api_route
 from .routes.chat import router as chat_router
+from .routes.meals import router as meals_router
 
 
 def configure_logging(log_level: str) -> None:
@@ -47,6 +48,7 @@ app.include_router(health_route.router)
 app.include_router(ingest_route.router)
 app.include_router(api_route.router)
 app.include_router(chat_router)
+app.include_router(meals_router)
 
 log.info("app_initialized", version="0.1.0", user_id=settings.user_id)
 
