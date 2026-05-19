@@ -91,9 +91,22 @@ def _session_factory() -> AsyncIterator[AsyncSession]:
 
 
 def _resolve_as_of(as_of: str | None) -> date_type:
+    """Resolve the dashboard 'today' anchor.
+
+    Default is today in the service timezone. The downstream queries use
+    `WHERE metric_date <= anchor` and take the most recent row, so when
+    today's data hasn't been ingested yet they gracefully fall back to
+    the most recent ingested day — and the `metric_date` field in the
+    response reflects the actual data date (not the anchor).
+
+    This used to default to `today - 1` to lag for late-arriving ingests,
+    but that meant the dashboard showed yesterday's recovery score while
+    the Whoop app showed today's. The 09:00 ET scheduler job + `<= anchor`
+    fallback together solve the same problem without the off-by-one feel.
+    """
     if as_of is None:
         tz = ZoneInfo(get_settings().timezone)
-        return datetime.now(tz).date() - timedelta(days=1)
+        return datetime.now(tz).date()
     try:
         return date_type.fromisoformat(as_of)
     except ValueError as e:
