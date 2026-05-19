@@ -5,7 +5,7 @@ No public URLs are returned to clients — all reads go through a backend proxy.
 """
 
 import hashlib
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -22,7 +22,7 @@ _EXT_TO_CONTENT_TYPE = {
 
 
 class ObjectStorage:
-    def __init__(self, client, bucket: str):
+    def __init__(self, client: Any, bucket: str):
         self.client = client
         self.bucket = bucket
 

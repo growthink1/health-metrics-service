@@ -61,3 +61,44 @@ def test_delete_calls_delete_object():
     store = ObjectStorage(client, bucket="test-bucket")
     store.delete("meals/abc.jpg")
     client.delete_object.assert_called_once_with(Bucket="test-bucket", Key="meals/abc.jpg")
+
+
+def test_get_storage_returns_none_when_unconfigured(monkeypatch):
+    from health_metrics import storage as storage_mod
+
+    class _FakeSettings:
+        s3_endpoint_url = "https://example.com"
+        s3_bucket = "test-bucket"
+        s3_access_key_id = None  # missing → should return None
+        s3_secret_access_key = "secret"
+        s3_region = "us-east-1"
+
+    monkeypatch.setattr(storage_mod, "get_settings", lambda: _FakeSettings())
+    storage_mod.reset_storage_for_tests()
+    try:
+        assert storage_mod.get_storage() is None
+    finally:
+        storage_mod.reset_storage_for_tests()
+
+
+def test_get_storage_returns_object_storage_when_configured(monkeypatch):
+    from health_metrics import storage as storage_mod
+
+    class _FakeSettings:
+        s3_endpoint_url = "https://example.com"
+        s3_bucket = "test-bucket"
+        s3_access_key_id = "AKIA"
+        s3_secret_access_key = "secret"
+        s3_region = "us-east-1"
+
+    monkeypatch.setattr(storage_mod, "get_settings", lambda: _FakeSettings())
+    storage_mod.reset_storage_for_tests()
+    try:
+        store1 = storage_mod.get_storage()
+        assert store1 is not None
+        assert isinstance(store1, storage_mod.ObjectStorage)
+        assert store1.bucket == "test-bucket"
+        store2 = storage_mod.get_storage()
+        assert store2 is store1  # cached singleton
+    finally:
+        storage_mod.reset_storage_for_tests()
