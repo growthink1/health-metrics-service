@@ -50,6 +50,13 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:3000"]
     )
 
+    # Object storage (Railway-managed, S3-compatible)
+    s3_endpoint_url: Optional[str] = Field(default=None)
+    s3_bucket: Optional[str] = Field(default=None)
+    s3_access_key_id: Optional[str] = Field(default=None)
+    s3_secret_access_key: Optional[str] = Field(default=None)
+    s3_region: str = Field(default="us-east-1")
+
 
 @lru_cache
 def get_settings() -> Settings:
