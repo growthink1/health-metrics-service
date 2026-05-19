@@ -10,6 +10,8 @@ def test_all_expected_tables_registered():
         "regulation_recommendations",
         "oauth_state",
         "narration_cache",
+        "meals",
+        "workout_sets",
     }
 
 

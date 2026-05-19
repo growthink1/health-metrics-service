@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models — mirrors docs/spec.md §3 schema."""
 
-from datetime import date as date_type, datetime
+from datetime import date as date_type, datetime, time as time_type
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -9,10 +9,12 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
     Text,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -191,4 +193,45 @@ class NarrationCache(Base):
             "user_id", "metric_date", "signals_hash",
             name="uq_narration_cache_user_date_hash",
         ),
+    )
+
+
+class Meal(Base):
+    __tablename__ = "meals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    meal_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    meal_time: Mapped[Optional[time_type]] = mapped_column(Time)
+    meal_name: Mapped[Optional[str]] = mapped_column(Text)
+    kcal: Mapped[Optional[int]] = mapped_column(Integer)
+    protein_g: Mapped[Optional[int]] = mapped_column(Integer)
+    fat_g: Mapped[Optional[int]] = mapped_column(Integer)
+    carbs_g: Mapped[Optional[int]] = mapped_column(Integer)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    photo_path: Mapped[Optional[str]] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'chat'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_meals_user_date", "user_id", "meal_date"),
+    )
+
+
+class WorkoutSet(Base):
+    __tablename__ = "workout_sets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    workout_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("workouts.id", ondelete="CASCADE"), nullable=False)
+    set_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    exercise: Mapped[str] = mapped_column(Text, nullable=False)
+    reps: Mapped[int] = mapped_column(Integer, nullable=False)
+    weight_lbs: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2))
+    rpe: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 1))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_workout_sets_workout", "workout_id"),
     )
