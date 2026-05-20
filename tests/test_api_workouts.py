@@ -42,3 +42,10 @@ async def test_workouts_filters_by_type_and_window(db_session, monkeypatch, test
         body = resp.json()
         assert len(body["workouts"]) == 1
         assert body["workouts"][0]["source_id"] == "w-1"
+
+        # id field must be present and be an integer in all responses
+        resp = await client.get(f"/api/workouts?user_id={test_user_id}&days=30&as_of=2026-05-13")
+        body = resp.json()
+        for w in body["workouts"]:
+            assert "id" in w, "workout missing id field"
+            assert isinstance(w["id"], int), f"workout id not int: {w['id']!r}"

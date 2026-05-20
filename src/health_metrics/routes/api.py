@@ -426,6 +426,7 @@ async def workouts(
         "n_days": days,
         "workouts": [
             {
+                "id": r.id,
                 "date": r.workout_date.isoformat(),
                 "source": r.source,
                 "source_id": r.source_id,
