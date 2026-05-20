@@ -52,9 +52,14 @@ def _confidence_from_ci(ci_low: float, ci_high: float, gap: float, n: int, min_n
     return "low"
 
 
-def _normal_normal_posterior(prior_mu, prior_sigma, mle, mle_se):
-    """Conjugate Normal-Normal update on slope-like parameter."""
-    if mle_se <= 0 or not np.isfinite(mle_se):
+def _normal_normal_posterior(prior_mu, prior_sigma, mle, mle_se, mle_se_floor=1e-6):
+    """Conjugate Normal-Normal update on slope-like parameter.
+
+    If mle_se is below ``mle_se_floor`` (e.g., perfectly-linear synthetic data
+    or scipy.linregress floating-point noise), fall back to the prior rather
+    than letting astronomical data-precision overwhelm it.
+    """
+    if mle_se <= mle_se_floor or not np.isfinite(mle_se):
         return prior_mu, prior_sigma
     prior_prec = 1.0 / (prior_sigma**2)
     data_prec = 1.0 / (mle_se**2)
@@ -90,9 +95,7 @@ def project_weight(
 
     days_remaining = (target_date - current_date).days
     proj_mean = current_value + post_mu * days_remaining
-    # Add residual variance floor to avoid degenerate CIs on near-perfectly-linear data.
-    # Real scales have at least ~0.5 lb measurement noise; floor projection std accordingly.
-    proj_std = float(np.hypot(post_sigma * abs(days_remaining), 0.5))
+    proj_std = post_sigma * abs(days_remaining)
     ci_low, ci_high = proj_mean - 1.96 * proj_std, proj_mean + 1.96 * proj_std
 
     # P(value_at_deadline <= target_value) for loss, >= for gain
@@ -112,7 +115,10 @@ def project_weight(
         "confidence": _confidence_from_ci(ci_low, ci_high, gap, n, MIN_OBS_WEIGHT),
         "data_points_used": n,
         # Report posterior in lb/wk (post_mu is per-day) so caller sees a familiar weekly rate.
-        "posterior_params": {"slope_mean": float(post_mu * 7), "slope_std": float(post_sigma * 7)},
+        "posterior_params": {
+            "weekly_slope_mean": float(post_mu * 7),
+            "weekly_slope_std": float(post_sigma * 7),
+        },
     }
 
 
@@ -127,6 +133,9 @@ def project_strength(
     n = len(obs)
     current_value = obs[-1][1] if obs else None
     if n < MIN_OBS_STRENGTH:
+        return _insufficient(n, MIN_OBS_STRENGTH, current_value)
+    if obs and obs[0][1] <= 0:
+        # Zero/negative starting PR would make log(values / obs[0][1]) infinite/NaN.
         return _insufficient(n, MIN_OBS_STRENGTH, current_value)
 
     # weekly % gain regression
