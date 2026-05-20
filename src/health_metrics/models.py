@@ -235,3 +235,60 @@ class WorkoutSet(Base):
     __table_args__ = (
         Index("idx_workout_sets_workout", "workout_id"),
     )
+
+
+class Goal(Base):
+    __tablename__ = "goals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    goal_type: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_params: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)
+    start_value: Mapped[Optional[Decimal]] = mapped_column(Numeric)
+    target_value: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    start_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    target_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'active'"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+
+
+class Milestone(Base):
+    __tablename__ = "milestones"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    goal_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("goals.id", ondelete="CASCADE"), nullable=False)
+    target_value: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    target_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    hit_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    hit_value: Mapped[Optional[Decimal]] = mapped_column(Numeric)
+
+    __table_args__ = (Index("idx_milestones_goal", "goal_id"),)
+
+
+class Subgoal(Base):
+    __tablename__ = "subgoals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    goal_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("goals.id", ondelete="CASCADE"), nullable=False)
+    preset: Mapped[str] = mapped_column(Text, nullable=False)
+    target_value: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, server_default=text("7"), nullable=False)
+
+
+class GoalRecommendation(Base):
+    __tablename__ = "goal_recommendations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    goal_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("goals.id", ondelete="CASCADE"), nullable=False)
+    rec_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    trajectory: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    actions: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    narration: Mapped[str] = mapped_column(Text, nullable=False)
+    signals_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+
+    __table_args__ = (UniqueConstraint("goal_id", "rec_date", name="uq_goal_recommendations_goal_date"),)

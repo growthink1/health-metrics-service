@@ -12,6 +12,10 @@ def test_all_expected_tables_registered():
         "narration_cache",
         "meals",
         "workout_sets",
+        "goals",
+        "milestones",
+        "subgoals",
+        "goal_recommendations",
     }
 
 
