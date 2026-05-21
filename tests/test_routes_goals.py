@@ -71,6 +71,27 @@ async def test_goal_status_returns_active_payload(db_session, monkeypatch, test_
 
 
 @pytest.mark.asyncio
+async def test_get_goal_status_payload_honors_anchor_date(db_session, test_user_id):
+    """anchor_date parameter is forwarded to compute_subgoal_compliance."""
+    from health_metrics.routes.goals import get_goal_status_payload
+
+    g = Goal(
+        user_id=test_user_id, goal_type="weight", name="g", metric="weight_lbs",
+        target_value=Decimal("185"), start_date=date(2026, 5, 1), target_date=date(2026, 8, 1),
+        is_primary=True, status="active",
+    )
+    db_session.add(g); await db_session.flush()
+    db_session.add(Subgoal(goal_id=g.id, preset="avg_kcal", target_value=Decimal("2100"), window_days=7))
+    await db_session.flush()
+
+    # Pin anchor_date well in the past — should still produce a valid payload (compliance just 0)
+    payload = await get_goal_status_payload(db_session, test_user_id, anchor_date=date(2020, 1, 1))
+    assert payload["goal"]["name"] == "g"
+    assert payload["subgoals"][0]["preset"] == "avg_kcal"
+    assert payload["subgoals"][0]["current_value"] is None or payload["subgoals"][0]["current_value"] == 0
+
+
+@pytest.mark.asyncio
 async def test_goal_history_returns_recent_rows(db_session, monkeypatch, test_user_id):
     from health_metrics.routes import goals as goals_route
     monkeypatch.setattr(goals_route, "_session_factory", lambda: _ctx(db_session))

@@ -37,8 +37,17 @@ def _goal_to_json(g: Goal) -> dict[str, Any]:
     }
 
 
-async def get_goal_status_payload(session: AsyncSession, user_id: str) -> dict[str, Any]:
-    """Build the GoalStatus payload — shared by the route + chat tool."""
+async def get_goal_status_payload(
+    session: AsyncSession,
+    user_id: str,
+    anchor_date: date_type | None = None,
+) -> dict[str, Any]:
+    """Build the GoalStatus payload — shared by the route + chat tool.
+
+    `anchor_date` defaults to today and is used as the "as-of" date for
+    subgoal compliance windowing. Pass an explicit date for backtesting or
+    deterministic testing.
+    """
     res = await session.execute(
         select(Goal).where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
         .order_by(Goal.created_at.desc()).limit(1)
@@ -61,7 +70,7 @@ async def get_goal_status_payload(session: AsyncSession, user_id: str) -> dict[s
 
     res = await session.execute(select(Subgoal).where(Subgoal.goal_id == goal.id))
     subgoals_rows = list(res.scalars().all())
-    today = date_type.today()
+    today = anchor_date or date_type.today()
     subgoals = [await compute_subgoal_compliance(session, goal, sg, today) for sg in subgoals_rows]
 
     res = await session.execute(
