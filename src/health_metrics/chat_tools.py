@@ -1,10 +1,8 @@
 """Chat tool registry + handlers.
 
-Nine tools exposed to Anthropic for the /api/chat endpoint:
-- 6 write tools (log_subjective, log_weight, log_nutrition, log_meal,
-  log_manual_workout, log_workout_set) — upsert/insert rows
-- 3 read tools (get_recent_metrics, get_workouts, get_recent_meals)
-  — fetch recent data for context
+Tools exposed to Anthropic for the /api/chat endpoint, split into:
+- Write tools (logging + goal mutations) — upsert/insert rows
+- Read tools — fetch recent data for context
 
 Write tools NEVER run server-side without a tool_confirmation: approved=True
 arriving from the client. The chat route enforces that policy; this module
@@ -17,6 +15,7 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import uuid4
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +25,8 @@ from .jobs.recompute import recompute_day_aggregate
 from .models import DailyMetrics, Goal, ManualLog, Meal, Milestone, Subgoal, Workout, WorkoutSet
 from .routes.api import _read_metric  # reuse the Oura→Whoop fallback
 from .routes.goals import get_goal_status_payload
+
+log = structlog.get_logger()
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
@@ -532,10 +533,24 @@ async def set_primary_goal(
     goal_id = placeholder.id
     await session.commit()
 
-    # Initial recompute (in same session)
-    await _initial_goal_recompute(session, placeholder)
-    return {"ok": True, "result": {"goal_id": goal_id, "name": name,
-                                   "start_value": float(placeholder.start_value) if placeholder.start_value else None}}
+    # Initial recompute — best-effort. Goal is already persisted; if narration
+    # generation fails (Anthropic down, etc.), surface a warning but keep the
+    # successful goal-creation result.
+    warning: str | None = None
+    try:
+        await _initial_goal_recompute(session, placeholder)
+    except Exception as exc:
+        log.warning("initial_goal_recompute_failed", goal_id=goal_id, error=str(exc))
+        warning = "initial_recompute_failed"
+
+    result: dict[str, Any] = {
+        "goal_id": goal_id,
+        "name": name,
+        "start_value": float(placeholder.start_value) if placeholder.start_value else None,
+    }
+    if warning:
+        result["warning"] = warning
+    return {"ok": True, "result": result}
 
 
 async def add_subgoal(
@@ -560,6 +575,8 @@ async def update_goal(
     target_date: str | None = None,
     status: str | None = None,
 ) -> dict[str, Any]:
+    if target_value is None and target_date is None and status is None:
+        return {"ok": False, "error": "no fields to update — pass target_value, target_date, or status"}
     g = (await session.execute(
         select(Goal).where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
     )).scalar_one_or_none()

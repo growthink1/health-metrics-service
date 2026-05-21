@@ -124,3 +124,34 @@ async def test_get_goal_status_returns_empty_shape(db_session, test_user_id):
     r = await get_goal_status(db_session, test_user_id)
     assert r["ok"] is True
     assert r["result"]["goal"] is None
+
+
+@pytest.mark.asyncio
+async def test_set_primary_goal_returns_warning_when_recompute_fails(db_session, monkeypatch, test_user_id):
+    """If _initial_goal_recompute raises, set_primary_goal still returns ok with a warning."""
+    from health_metrics import chat_tools
+    monkeypatch.setattr(
+        chat_tools, "_initial_goal_recompute",
+        AsyncMock(side_effect=RuntimeError("anthropic down")),
+    )
+    result = await set_primary_goal(
+        db_session, test_user_id,
+        goal_type="weight", name="g", metric="weight_lbs",
+        target_value=185, target_date="2026-08-01",
+    )
+    assert result["ok"] is True
+    assert result["result"]["warning"] == "initial_recompute_failed"
+
+
+@pytest.mark.asyncio
+async def test_update_goal_rejects_no_fields(db_session, test_user_id):
+    g = Goal(
+        user_id=test_user_id, goal_type="weight", name="g", metric="weight_lbs",
+        target_value=Decimal("185"), start_date=date(2026, 5, 1), target_date=date(2026, 8, 1),
+        is_primary=True, status="active",
+    )
+    db_session.add(g); await db_session.flush()
+
+    r = await update_goal(db_session, test_user_id)
+    assert r["ok"] is False
+    assert "no fields" in r["error"].lower()
