@@ -1,4 +1,5 @@
-"""Scheduler registers both daily-ingest cron jobs (06:00 yesterday + 09:00 today)."""
+"""Scheduler registers daily-ingest cron jobs (06:00 yesterday + 09:00 today)
+plus the 09:15 v4 daily-goals recompute job."""
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -10,8 +11,11 @@ def test_build_scheduler_registers_both_daily_jobs():
     sched = build_scheduler(user_id="hugo")
     try:
         jobs = {j.id: j for j in sched.get_jobs()}
-        assert set(jobs.keys()) == {"daily_ingest_yesterday", "daily_ingest_today"}, \
-            f"expected both jobs, got {list(jobs.keys())}"
+        assert set(jobs.keys()) == {
+            "daily_ingest_yesterday",
+            "daily_ingest_today",
+            "daily_goals_v4",
+        }, f"expected three jobs, got {list(jobs.keys())}"
 
         # 06:00 ET job — ingests yesterday
         y = jobs["daily_ingest_yesterday"]
@@ -26,6 +30,15 @@ def test_build_scheduler_registers_both_daily_jobs():
         hour_field = next(f for f in t.trigger.fields if f.name == "hour")
         assert str(hour_field) == "9", f"today job hour: expected 9, got {hour_field}"
         assert str(t.trigger.timezone) == "America/New_York"
+
+        # 09:15 ET job — v4 per-goal daily recompute
+        g = jobs["daily_goals_v4"]
+        assert isinstance(g.trigger, CronTrigger)
+        hour_field = next(f for f in g.trigger.fields if f.name == "hour")
+        minute_field = next(f for f in g.trigger.fields if f.name == "minute")
+        assert str(hour_field) == "9", f"daily_goals job hour: expected 9, got {hour_field}"
+        assert str(minute_field) == "15", f"daily_goals job minute: expected 15, got {minute_field}"
+        assert str(g.trigger.timezone) == "America/New_York"
     finally:
         if sched.running:
             sched.shutdown(wait=False)

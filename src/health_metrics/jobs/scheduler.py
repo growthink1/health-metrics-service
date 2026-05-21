@@ -22,6 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from ..db import AsyncSessionLocal
+from . import daily_goals
 from .daily_ingest import run_daily_ingest
 
 log = structlog.get_logger()
@@ -55,6 +56,17 @@ async def _run_ingest_for_today(user_id: str) -> None:
             log.error("scheduler_tick_failed", job="today", error=str(e), day=today.isoformat())
 
 
+async def _run_daily_goals(user_id: str) -> None:
+    """09:15 ET job — recompute today's projection + recommendation for each active primary goal."""
+    log.info("scheduler_tick", job="daily_goals", user_id=user_id)
+    async with AsyncSessionLocal() as session:
+        try:
+            await daily_goals.run_for_all_active_goals(session, user_id)
+            log.info("scheduler_tick_complete", job="daily_goals")
+        except Exception as e:
+            log.error("scheduler_tick_failed", job="daily_goals", error=str(e))
+
+
 def build_scheduler(user_id: str) -> AsyncIOScheduler:
     """Build (do not start) an AsyncIOScheduler with both daily-ingest jobs."""
     sched = AsyncIOScheduler(timezone=_SCHEDULER_TZ)
@@ -72,6 +84,15 @@ def build_scheduler(user_id: str) -> AsyncIOScheduler:
         trigger=CronTrigger(hour=9, minute=0, timezone=_SCHEDULER_TZ),
         kwargs={"user_id": user_id},
         id="daily_ingest_today",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+    sched.add_job(
+        _run_daily_goals,
+        trigger=CronTrigger(hour=9, minute=15, timezone=_SCHEDULER_TZ),
+        kwargs={"user_id": user_id},
+        id="daily_goals_v4",
         replace_existing=True,
         max_instances=1,
         misfire_grace_time=3600,
