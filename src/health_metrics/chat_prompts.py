@@ -6,16 +6,35 @@ live DB state — chat is not multi-turn-stateful on the backend (the client
 sends the full message history each request).
 """
 
-from datetime import date as date_type, timedelta
+from datetime import date as date_type
+from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .chat_tools import TOOL_DEFINITIONS
+from .models import DailyMetrics, Goal, GoalRecommendation
 from .regulation import compute_regulation_signals, regulate
 from .routes.api import _read_metric
-from .models import DailyMetrics
-from sqlalchemy import select
+
+_INTERVIEW_ADDENDUM = """
+The user has no active primary goal. If they ask for help setting one, conduct
+a brief structured interview — one question per turn, multiple-choice when sensible:
+
+  Q1. What kind of goal? Options: weight / strength PR / habit consistency / recovery / HRV improvement.
+  Q2. Based on Q1, ask for the specific metric (target lbs, exercise + reps, preset + target, target HRV).
+  Q3. Target date (default: 12 weeks from today; offer to adjust).
+  Q4. Suggest 2-3 typed subgoals appropriate for the goal type. Ask the user to confirm or modify.
+  Q5. Summarize the proposed goal + subgoals. Then call set_primary_goal. Subgoals attach via
+      separate add_subgoal calls AFTER the primary goal is confirmed.
+
+Push back (not block) on unreasonable timelines: weight loss > 2 lb/wk, target date < 14 days
+(non-habit), strength gain > 5% / wk, HRV target > +10 ms over current. State the literature
+norm + risk, ask the user to confirm explicitly.
+
+Ask ONE question per turn. Don't call set_primary_goal until Q5 summary is approved.
+"""
 
 
 async def build_system_prompt(
@@ -96,4 +115,38 @@ Behavior rules:
             "so the meal row references the saved photo."
         )
 
-    return base + image_block
+    prompt = base + image_block
+
+    # Goal addendum
+    res = await session.execute(
+        select(Goal)
+        .where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
+        .order_by(Goal.created_at.desc())
+        .limit(1)
+    )
+    goal = res.scalar_one_or_none()
+    if goal is None:
+        return prompt + "\n\n" + _INTERVIEW_ADDENDUM.strip()
+
+    # Active-goal block
+    rec_res = await session.execute(
+        select(GoalRecommendation)
+        .where(GoalRecommendation.goal_id == goal.id)
+        .order_by(GoalRecommendation.rec_date.desc())
+        .limit(1)
+    )
+    rec = rec_res.scalar_one_or_none()
+    narration = rec.narration if rec else "(no recommendation yet)"
+    p = rec.trajectory.get("p_on_pace") if rec else None
+    p_str = "no projection yet" if p is None else f"{p:.2f}"
+    block = (
+        f"\n\nActive primary goal: \"{goal.name}\" — {goal.goal_type} from "
+        f"{goal.start_value if goal.start_value is not None else 'unknown'} → "
+        f"{goal.target_value} by {goal.target_date.isoformat()}.\n"
+        f"Today's recommendation: {narration}\n"
+        f"P_on_pace: {p_str}.\n"
+        "Available goal tools: set_primary_goal, add_subgoal, update_goal, get_goal_status.\n"
+        "You also have web_search — use it when the user asks for best-practice context "
+        "(e.g. 'how fast can someone lose 15 lbs?'). Cite sources."
+    )
+    return prompt + block
