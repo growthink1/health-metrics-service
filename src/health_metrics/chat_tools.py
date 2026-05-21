@@ -11,7 +11,9 @@ arriving from the client. The chat route enforces that policy; this module
 just exposes the handlers + definitions.
 """
 
-from datetime import date as date_type, datetime, timedelta, timezone
+from datetime import date as date_type
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -19,10 +21,11 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .jobs.daily_goals import compute_current_value, daily_goal_recompute
 from .jobs.recompute import recompute_day_aggregate
-from .models import DailyMetrics, ManualLog, Meal, Workout, WorkoutSet
+from .models import DailyMetrics, Goal, ManualLog, Meal, Milestone, Subgoal, Workout, WorkoutSet
 from .routes.api import _read_metric  # reuse the Oura→Whoop fallback
-
+from .routes.goals import get_goal_status_payload
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
@@ -149,6 +152,53 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["days"],
         },
     },
+    {
+        "name": "set_primary_goal",
+        "description": "Create the user's new primary goal. Automatically archives any existing active primary goal and auto-generates monthly milestones. User MUST confirm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_type":    {"type": "string", "enum": ["weight", "strength", "habit", "recovery_hrv"]},
+                "name":         {"type": "string"},
+                "metric":       {"type": "string"},
+                "metric_params":{"type": "object"},
+                "target_value": {"type": "number"},
+                "target_date":  {"type": "string"},
+            },
+            "required": ["goal_type", "name", "metric", "target_value", "target_date"],
+        },
+    },
+    {
+        "name": "add_subgoal",
+        "description": "Add a typed subgoal to the user's active primary goal. User MUST confirm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preset":       {"type": "string", "enum": ["avg_kcal","workouts_per_week","sleep_hours_avg","protein_g_avg","meal_logs_per_week"]},
+                "target_value": {"type": "number"},
+                "window_days":  {"type": "integer", "minimum": 1, "maximum": 90},
+            },
+            "required": ["preset", "target_value"],
+        },
+    },
+    {
+        "name": "update_goal",
+        "description": "Modify the primary goal's target value, target date, or lifecycle status. User MUST confirm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_value": {"type": "number"},
+                "target_date":  {"type": "string"},
+                "status":       {"type": "string", "enum": ["active","achieved","archived","missed"]},
+            },
+        },
+    },
+    {
+        "name": "get_goal_status",
+        "description": "Read-only snapshot of the active primary goal: current value, projection, p_on_pace, milestones, subgoal compliances, today's recommendation.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
 ]
 
 
@@ -413,6 +463,129 @@ async def get_recent_meals(
     return {"ok": True, "result": {"meals": meals}}
 
 
+def _generate_milestones(start: date_type, target: date_type, start_value, target_value) -> list[dict]:
+    span = (target - start).days
+    if span <= 35:
+        points = [target]
+    elif span <= 70:
+        points = [start + timedelta(days=span // 2), target]
+    else:
+        # monthly checkpoints
+        points = []
+        cur = start + timedelta(days=30)
+        while cur < target:
+            points.append(cur)
+            cur += timedelta(days=30)
+        points.append(target)
+    out = []
+    for d in points:
+        frac = (d - start).days / max(span, 1)
+        v = float(start_value) + frac * (float(target_value) - float(start_value))
+        out.append({"target_value": round(v, 1), "target_date": d})
+    return out
+
+
+async def _initial_goal_recompute(session: AsyncSession, goal: Goal) -> None:
+    """Compute the first day's recommendation immediately after goal creation."""
+    await daily_goal_recompute(session, goal)
+
+
+async def set_primary_goal(
+    session: AsyncSession, user_id: str,
+    goal_type: str, name: str, metric: str,
+    target_value: float, target_date: str,
+    metric_params: dict | None = None,
+) -> dict[str, Any]:
+    td = _parse_date(target_date)
+    if td is None:
+        return {"ok": False, "error": f"invalid target_date: {target_date!r}"}
+    today = date_type.today()
+    if td <= today:
+        return {"ok": False, "error": "target_date must be in the future"}
+
+    # Archive any existing primary active goal
+    res = await session.execute(
+        select(Goal).where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
+    )
+    for prior in res.scalars().all():
+        prior.status = "archived"
+
+    # Compute start_value lazily
+    placeholder = Goal(
+        user_id=user_id, goal_type=goal_type, name=name, metric=metric,
+        metric_params=metric_params, target_value=Decimal(str(target_value)),
+        start_date=today, target_date=td, is_primary=True, status="active",
+    )
+    session.add(placeholder)
+    await session.flush()
+    sv = await compute_current_value(session, placeholder, today)
+    if sv is not None:
+        placeholder.start_value = Decimal(str(sv))
+
+    # Milestones
+    sv_for_ms = float(placeholder.start_value) if placeholder.start_value is not None else float(target_value)
+    for m in _generate_milestones(today, td, sv_for_ms, target_value):
+        session.add(Milestone(goal_id=placeholder.id,
+                              target_value=Decimal(str(m["target_value"])),
+                              target_date=m["target_date"]))
+    await session.flush()
+    goal_id = placeholder.id
+    await session.commit()
+
+    # Initial recompute (in same session)
+    await _initial_goal_recompute(session, placeholder)
+    return {"ok": True, "result": {"goal_id": goal_id, "name": name,
+                                   "start_value": float(placeholder.start_value) if placeholder.start_value else None}}
+
+
+async def add_subgoal(
+    session: AsyncSession, user_id: str, preset: str, target_value: float,
+    window_days: int = 7,
+) -> dict[str, Any]:
+    g = (await session.execute(
+        select(Goal).where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
+    )).scalar_one_or_none()
+    if g is None:
+        return {"ok": False, "error": "no active primary goal — set one first with set_primary_goal"}
+    sg = Subgoal(goal_id=g.id, preset=preset, target_value=Decimal(str(target_value)), window_days=window_days)
+    session.add(sg)
+    await session.flush()
+    await session.commit()
+    return {"ok": True, "result": {"subgoal_id": sg.id, "preset": preset, "target_value": float(target_value)}}
+
+
+async def update_goal(
+    session: AsyncSession, user_id: str,
+    target_value: float | None = None,
+    target_date: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    g = (await session.execute(
+        select(Goal).where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
+    )).scalar_one_or_none()
+    if g is None:
+        return {"ok": False, "error": "no active primary goal"}
+    if target_date is not None:
+        td = _parse_date(target_date)
+        if td is None or td <= date_type.today():
+            return {"ok": False, "error": "target_date must be in the future"}
+        g.target_date = td
+    if target_value is not None:
+        g.target_value = Decimal(str(target_value))
+    if status is not None:
+        g.status = status
+    g.updated_at = datetime.now(timezone.utc)
+    await session.flush()
+    await session.commit()
+    return {"ok": True, "result": {"goal_id": g.id, "target_date": g.target_date.isoformat(),
+                                   "target_value": float(g.target_value), "status": g.status}}
+
+
+async def get_goal_status(session: AsyncSession, user_id: str) -> dict[str, Any]:
+    payload = await get_goal_status_payload(session, user_id)
+    return {"ok": True, "result": payload}
+
+
 # Dispatch table — chat route looks up tool name → handler.
 TOOL_HANDLERS = {
     "get_recent_metrics": get_recent_metrics,
@@ -425,6 +598,14 @@ TOOL_HANDLERS = {
     "log_manual_workout": log_manual_workout,
     "log_workout_set": log_workout_set,
 }
+TOOL_HANDLERS.update({
+    "set_primary_goal": set_primary_goal,
+    "add_subgoal": add_subgoal,
+    "update_goal": update_goal,
+    "get_goal_status": get_goal_status,
+})
 
 READ_TOOLS = {"get_recent_metrics", "get_workouts", "get_recent_meals"}
+READ_TOOLS.add("get_goal_status")
 WRITE_TOOLS = {"log_subjective", "log_weight", "log_nutrition", "log_meal", "log_manual_workout", "log_workout_set"}
+WRITE_TOOLS.update({"set_primary_goal", "add_subgoal", "update_goal"})

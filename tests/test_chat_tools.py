@@ -7,33 +7,40 @@ import pytest
 from sqlalchemy import select, text
 
 from health_metrics.chat_tools import (
+    READ_TOOLS,
     TOOL_DEFINITIONS,
-    log_subjective,
-    log_weight,
-    log_nutrition,
+    WRITE_TOOLS,
+    get_recent_meals,
     get_recent_metrics,
     get_workouts,
-    log_meal,
     log_manual_workout,
+    log_meal,
+    log_nutrition,
+    log_subjective,
+    log_weight,
     log_workout_set,
-    get_recent_meals,
-    READ_TOOLS,
-    WRITE_TOOLS,
 )
 from health_metrics.models import ManualLog, Meal, Workout, WorkoutSet
 
 
 def test_tool_definitions_shape():
-    assert len(TOOL_DEFINITIONS) == 9
+    assert len(TOOL_DEFINITIONS) == 14
     names = {t["name"] for t in TOOL_DEFINITIONS}
     assert names == {
         "log_subjective", "log_weight", "log_nutrition",
         "get_recent_metrics", "get_workouts",
         "log_meal", "log_manual_workout", "log_workout_set", "get_recent_meals",
+        "set_primary_goal", "add_subgoal", "update_goal", "get_goal_status",
+        "web_search",
     }
+    # web_search is Anthropic's server-side tool — different shape (no input_schema).
     for t in TOOL_DEFINITIONS:
-        assert "name" in t and "description" in t and "input_schema" in t
-        assert t["input_schema"]["type"] == "object"
+        assert "name" in t
+        if t["name"] == "web_search":
+            assert t["type"] == "web_search_20250305"
+        else:
+            assert "description" in t and "input_schema" in t
+            assert t["input_schema"]["type"] == "object"
 
 
 @pytest.mark.asyncio
