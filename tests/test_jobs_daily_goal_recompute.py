@@ -67,6 +67,30 @@ async def test_recompute_reuses_cache_on_unchanged_signals(db_session, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_recompute_invalidates_cache_when_target_changes(db_session, monkeypatch, test_user_id):
+    """C2 followup: target_value/target_date are part of the signals hash, so
+    mutating either on the in-memory goal between calls must miss the cache
+    and trigger a fresh narration."""
+    for i in range(30):
+        db_session.add(ManualLog(
+            user_id=test_user_id, log_date=date(2026, 4, 1) + timedelta(days=i),
+            weight_lbs=Decimal(str(200 - 0.1 * i)),
+        ))
+    g = await _make_goal(db_session, test_user_id)
+    await db_session.flush()
+
+    narrate = AsyncMock(return_value="First narration.")
+    monkeypatch.setattr(daily_goals, "_claude_narrate", narrate)
+
+    await daily_goals.daily_goal_recompute(db_session, g, anchor=date(2026, 5, 1))
+    # Move the deadline a month later — same anchor, same observations, but a
+    # different target_date should change the signals hash and force a recompute.
+    g.target_date = date(2026, 8, 1)
+    await daily_goals.daily_goal_recompute(db_session, g, anchor=date(2026, 5, 1))
+    assert narrate.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_recompute_marks_milestone_hit(db_session, monkeypatch, test_user_id):
     for i in range(30):
         db_session.add(ManualLog(

@@ -19,9 +19,29 @@ from .projection import project_habit, project_hrv, project_strength, project_we
 log = structlog.get_logger()
 
 
+# ---- direction inference (shared helper) -----------------------------------
+
+def _goal_direction_down(goal: Goal, current_value: float | None) -> bool:
+    """True if goal is a 'down' goal (target < start).
+
+    Uses ``current_value`` as the baseline when ``start_value`` is None — handles
+    lazy-create goals where start_value is backfilled after the first
+    ``compute_current_value`` call. If neither is available, falls back to a
+    baseline just above the target so the default direction is "down" (the
+    common case for weight-loss goals). Conservative.
+    """
+    if goal.start_value is not None:
+        baseline = float(goal.start_value)
+    elif current_value is not None:
+        baseline = current_value
+    else:
+        baseline = float(goal.target_value) + 1.0
+    return float(goal.target_value) < baseline
+
+
 # ---- per-goal-type current-value computation --------------------------------
 
-async def compute_current_value(session, goal: Goal, anchor: date_type) -> float | None:
+async def compute_current_value(session: AsyncSession, goal: Goal, anchor: date_type) -> float | None:
     if goal.goal_type == "weight":
         res = await session.execute(
             select(ManualLog.weight_lbs).where(
@@ -75,7 +95,12 @@ async def compute_current_value(session, goal: Goal, anchor: date_type) -> float
 
 # ---- per-goal-type projection ----------------------------------------------
 
-async def project_to_deadline(session, goal: Goal, anchor: date_type) -> dict[str, Any]:
+async def project_to_deadline(
+    session: AsyncSession,
+    goal: Goal,
+    anchor: date_type,
+    current_value: float | None = None,
+) -> dict[str, Any]:
     if goal.goal_type == "weight":
         res = await session.execute(
             select(ManualLog.log_date, ManualLog.weight_lbs).where(
@@ -86,7 +111,14 @@ async def project_to_deadline(session, goal: Goal, anchor: date_type) -> dict[st
             ).order_by(ManualLog.log_date.asc())
         )
         obs = [(d, float(v)) for d, v in res.all()]
-        direction = "down" if float(goal.target_value) < float(goal.start_value or 0) else "up"
+        # Use caller-supplied current_value if provided (avoids a duplicate query
+        # when the orchestrator already computed it). Otherwise fetch it here so
+        # _goal_direction_down has a baseline when start_value is None.
+        cv_for_direction = (
+            current_value if current_value is not None
+            else await compute_current_value(session, goal, anchor)
+        )
+        direction = "down" if _goal_direction_down(goal, cv_for_direction) else "up"
         return project_weight(obs, anchor, float(goal.target_value), goal.target_date, direction)
 
     if goal.goal_type == "strength":
@@ -147,9 +179,13 @@ _SUBGOAL_DISPATCH: dict[str, str] = {
 }
 
 
-async def compute_subgoal_compliance(session, goal: Goal, subgoal: Subgoal, anchor: date_type) -> dict[str, Any]:
+async def compute_subgoal_compliance(session: AsyncSession, goal: Goal, subgoal: Subgoal, anchor: date_type) -> dict[str, Any]:
     target = float(subgoal.target_value)
     cutoff = anchor - timedelta(days=subgoal.window_days)
+    # For count-style presets (workouts_per_week, meal_logs_per_week) the target
+    # is "per week" but the compliance window may be longer/shorter. Scale the
+    # target to match the window so a 14-day window compares against target*2.
+    scaled_target = target
     current: float | None
     if subgoal.preset == "avg_kcal":
         res = await session.execute(
@@ -181,30 +217,36 @@ async def compute_subgoal_compliance(session, goal: Goal, subgoal: Subgoal, anch
         v = res.scalar_one_or_none()
         current = float(v) / 60.0 if v is not None else None
     elif subgoal.preset == "workouts_per_week":
+        window_days = subgoal.window_days
         res = await session.execute(
             select(func.count()).select_from(Workout).where(
                 Workout.user_id == goal.user_id,
-                Workout.workout_date >= anchor - timedelta(days=7),
+                Workout.workout_date >= anchor - timedelta(days=window_days),
                 Workout.workout_date <= anchor,
             )
         )
         current = float(res.scalar() or 0)
+        scaled_target = target * (window_days / 7.0)
     elif subgoal.preset == "meal_logs_per_week":
+        window_days = subgoal.window_days
         res = await session.execute(
             select(func.count()).select_from(Meal).where(
                 Meal.user_id == goal.user_id,
-                Meal.meal_date >= anchor - timedelta(days=7),
+                Meal.meal_date >= anchor - timedelta(days=window_days),
                 Meal.meal_date <= anchor,
             )
         )
         current = float(res.scalar() or 0)
+        scaled_target = target * (window_days / 7.0)
     else:
         current = None
 
     if current is None:
         pct = 0.0
     elif subgoal.preset in {"workouts_per_week", "meal_logs_per_week"}:
-        pct = max(0.0, min(100.0, (current / target) * 100))
+        # scaled_target accounts for non-7-day windows; guard against zero.
+        denom = scaled_target if scaled_target > 0 else 1.0
+        pct = max(0.0, min(100.0, (current / denom) * 100))
     else:
         pct = max(0.0, 100.0 - abs(current - target) / target * 100)
     return {
@@ -215,13 +257,13 @@ async def compute_subgoal_compliance(session, goal: Goal, subgoal: Subgoal, anch
 
 # ---- milestone-hit detection ------------------------------------------------
 
-async def update_milestones(session, goal: Goal, current_value: float | None, anchor: date_type) -> None:
+async def update_milestones(session: AsyncSession, goal: Goal, current_value: float | None, anchor: date_type) -> None:
     if current_value is None:
         return
     res = await session.execute(
         select(Milestone).where(Milestone.goal_id == goal.id, Milestone.hit_at.is_(None))
     )
-    direction_down = float(goal.target_value) < float(goal.start_value or current_value)
+    direction_down = _goal_direction_down(goal, current_value)
     for m in res.scalars().all():
         tv = float(m.target_value)
         hit = current_value <= tv if direction_down else current_value >= tv
@@ -301,14 +343,27 @@ def compose_actions(
 
 # ---- signals hash + LLM narration ------------------------------------------
 
-def _signals_hash(goal_id: int, current_value, p_on_pace, subgoal_compliances, regulation_rec_type) -> str:
+def _signals_hash(
+    goal_id: int,
+    target_value: float,
+    target_date: date_type,
+    current_value: float | None,
+    p_on_pace: float | None,
+    subgoal_compliances: list[dict[str, Any]],
+    regulation_rec_type: str,
+) -> str:
     p_bucket = "none" if p_on_pace is None else (
         "off" if p_on_pace < 0.35 else ("uncertain" if p_on_pace < 0.65 else "on")
     )
     compl_rounded = sorted([(s["preset"], int(round(s["compliance_pct"] / 10) * 10)) for s in subgoal_compliances])
     payload = json.dumps({
-        "goal_id": goal_id, "cv": None if current_value is None else round(current_value, 1),
-        "p_bucket": p_bucket, "compl": compl_rounded, "reg": regulation_rec_type,
+        "goal_id": goal_id,
+        "tv": round(target_value, 1),
+        "td": target_date.isoformat(),
+        "cv": None if current_value is None else round(current_value, 1),
+        "p_bucket": p_bucket,
+        "compl": compl_rounded,
+        "reg": regulation_rec_type,
     }, sort_keys=True).encode()
     return hashlib.sha256(payload).hexdigest()
 
@@ -342,10 +397,15 @@ async def _claude_narrate(goal: Goal, projection: dict[str, Any],
 
 # ---- main daily recompute --------------------------------------------------
 
-async def daily_goal_recompute(session: AsyncSession, goal: Goal, anchor: date_type | None = None) -> None:
+async def daily_goal_recompute(
+    session: AsyncSession,
+    goal: Goal,
+    anchor: date_type | None = None,
+    commit: bool = True,
+) -> None:
     anchor = anchor or date_type.today()
     current_value = await compute_current_value(session, goal, anchor)
-    projection = await project_to_deadline(session, goal, anchor)
+    projection = await project_to_deadline(session, goal, anchor, current_value=current_value)
     await update_milestones(session, goal, current_value, anchor)
 
     signals = await compute_regulation_signals(session, user_id=goal.user_id, anchor=anchor)
@@ -358,7 +418,15 @@ async def daily_goal_recompute(session: AsyncSession, goal: Goal, anchor: date_t
     days_remaining = max(0, (goal.target_date - anchor).days)
     actions = compose_actions(goal, current_value, projection, rec_type, days_remaining, compliances)
 
-    sig = _signals_hash(goal.id, current_value, projection.get("p_on_pace"), compliances, rec_type)
+    sig = _signals_hash(
+        goal.id,
+        float(goal.target_value),
+        goal.target_date,
+        current_value,
+        projection.get("p_on_pace"),
+        compliances,
+        rec_type,
+    )
     cached = (await session.execute(
         select(GoalRecommendation).where(
             GoalRecommendation.goal_id == goal.id,
@@ -375,15 +443,24 @@ async def daily_goal_recompute(session: AsyncSession, goal: Goal, anchor: date_t
         set_={"trajectory": projection, "actions": actions, "narration": narration, "signals_hash": sig},
     )
     await session.execute(stmt)
-    await session.commit()
+    if commit:
+        await session.commit()
 
 
 async def run_for_all_active_goals(session: AsyncSession, user_id: str) -> None:
+    """List active primary goals using the provided session, then recompute
+    each in its own session so an error in one goal can't leave the shared
+    session in a bad state for the next iteration.
+    """
+    from ..db import AsyncSessionLocal
     res = await session.execute(
         select(Goal).where(Goal.user_id == user_id, Goal.status == "active", Goal.is_primary.is_(True))
     )
-    for g in res.scalars().all():
-        try:
-            await daily_goal_recompute(session, g)
-        except Exception:
-            log.exception("goal_recompute_failed", goal_id=g.id)
+    goals = list(res.scalars().all())
+    for g in goals:
+        async with AsyncSessionLocal() as goal_session:
+            try:
+                await daily_goal_recompute(goal_session, g)
+            except Exception:
+                log.exception("goal_recompute_failed", goal_id=g.id)
+                await goal_session.rollback()
