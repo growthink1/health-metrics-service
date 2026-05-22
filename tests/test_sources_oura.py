@@ -20,10 +20,10 @@ def oura_fixture() -> dict:
 @pytest.mark.asyncio
 @respx.mock
 async def test_oura_sleep_widens_window_and_filters_by_day():
-    """The Oura /sleep endpoint filters by bedtime_start, not by reference day,
-    so a same-day query (start_date=d&end_date=d) misses any overnight session
-    that started the previous evening. Fix: widen window to (d-1, d) and
-    filter the returned sessions by `day` field."""
+    """The Oura /sleep endpoint's start_date/end_date filter on the session's
+    bedtime calendar date (NOT the `day` wake-up field). A same-day query
+    misses every overnight session (bedtime is on day-1). Fix: widen window
+    to (d, d+1) and filter the returned sessions by `day` field."""
     target = date(2026, 5, 12)
 
     # daily_sleep + readiness + activity respond with empty data (irrelevant to this test)
@@ -37,27 +37,27 @@ async def test_oura_sleep_widens_window_and_filters_by_day():
         return_value=httpx.Response(200, json={"data": [], "next_token": None})
     )
 
-    # /sleep — two sessions in the returned window:
-    #   - one tied to the target day (2026-05-12, the wake-up day) — should be picked
-    #   - one tied to the previous day (2026-05-11, e.g. a nap) — should be ignored
+    # /sleep — two sessions in the returned (d, d+1) window:
+    #   - target-day overnight (day=2026-05-12, bedtime_start=2026-05-11T23:30) — picked
+    #   - next-day nap (day=2026-05-13) — ignored
     sleep_route = respx.get(
         "https://api.ouraring.com/v2/usercollection/sleep",
-        params={"start_date": "2026-05-11", "end_date": "2026-05-12"},
+        params={"start_date": "2026-05-12", "end_date": "2026-05-13"},
     ).mock(return_value=httpx.Response(200, json={
         "data": [
-            {  # previous-day nap — must NOT be selected
-                "id": "nap-1", "day": "2026-05-11", "type": "rest",
-                "bedtime_start": "2026-05-11T14:00:00-04:00",
-                "total_sleep_duration": 1800, "average_hrv": 30, "lowest_heart_rate": 70,
-                "rem_sleep_duration": 0, "deep_sleep_duration": 0, "light_sleep_duration": 1800,
-                "awake_time": 0, "latency": 0, "efficiency": 100.0,
-            },
             {  # target-day overnight — must be selected
                 "id": "long-1", "day": "2026-05-12", "type": "long_sleep",
                 "bedtime_start": "2026-05-11T23:30:00-04:00",
                 "total_sleep_duration": 24720, "average_hrv": 45, "lowest_heart_rate": 58,
                 "rem_sleep_duration": 5040, "deep_sleep_duration": 4200, "light_sleep_duration": 15480,
                 "awake_time": 1080, "latency": 540, "efficiency": 89.2,
+            },
+            {  # next-day nap — must NOT be selected
+                "id": "nap-1", "day": "2026-05-13", "type": "rest",
+                "bedtime_start": "2026-05-13T14:00:00-04:00",
+                "total_sleep_duration": 1800, "average_hrv": 30, "lowest_heart_rate": 70,
+                "rem_sleep_duration": 0, "deep_sleep_duration": 0, "light_sleep_duration": 1800,
+                "awake_time": 0, "latency": 0, "efficiency": 100.0,
             },
         ],
         "next_token": None,
@@ -95,9 +95,9 @@ async def test_oura_sleep_returns_none_when_no_matching_day_session():
     )
     respx.get("https://api.ouraring.com/v2/usercollection/sleep").mock(
         return_value=httpx.Response(200, json={"data": [
-            {
-                "id": "nap-1", "day": "2026-05-11", "type": "rest",
-                "bedtime_start": "2026-05-11T14:00:00-04:00",
+            {  # next-day nap leaks into (d, d+1) window — must be filtered out
+                "id": "nap-1", "day": "2026-05-13", "type": "rest",
+                "bedtime_start": "2026-05-13T14:00:00-04:00",
                 "total_sleep_duration": 1800, "average_hrv": 30, "lowest_heart_rate": 70,
             },
         ], "next_token": None})

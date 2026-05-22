@@ -34,13 +34,20 @@ class OuraClient:
         same_day_params = {"start_date": d, "end_date": d}
 
         daily_sleep = await self._get("usercollection/daily_sleep", same_day_params)
-        # The /sleep endpoint filters by bedtime_start (when the session began),
-        # not by the wake-up day. A same-day query misses overnight sessions that
-        # started the previous evening — which is almost every long_sleep. Widen
-        # the window to (d-1, d) and filter by the session's `day` field below.
+        # The /sleep endpoint's start_date/end_date filter on the session's
+        # bedtime calendar date (NOT the `day` wake-up field). A same-day query
+        # (start_date=d, end_date=d) misses every overnight session because
+        # bedtime_start is typically on day-1 (e.g. "23:30"). Empirically the
+        # right window to retrieve the session whose `day == d` is (d, d+1):
+        #
+        #   target d=2026-05-21 → start=2026-05-21, end=2026-05-22
+        #   → returns 1 session with day=2026-05-21, bedtime_start=2026-05-20T23:39
+        #
+        # We then filter by `day` below to discard naps from the next day that
+        # leak into the response window.
         sleep_params = {
-            "start_date": (day - timedelta(days=1)).isoformat(),
-            "end_date": d,
+            "start_date": d,
+            "end_date": (day + timedelta(days=1)).isoformat(),
         }
         sleep = await self._get("usercollection/sleep", sleep_params)
         daily_readiness = await self._get(
