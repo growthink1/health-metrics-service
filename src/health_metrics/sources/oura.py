@@ -1,6 +1,6 @@
 """Oura v2 client. Auth: Personal Access Token bearer header."""
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -31,18 +31,35 @@ class OuraClient:
 
     async def fetch_day(self, day: date) -> OuraDayPayload:
         d = day.isoformat()
-        params = {"start_date": d, "end_date": d}
+        same_day_params = {"start_date": d, "end_date": d}
 
-        daily_sleep = await self._get("usercollection/daily_sleep", params)
-        sleep = await self._get("usercollection/sleep", params)
-        daily_readiness = await self._get("usercollection/daily_readiness", params)
-        daily_activity = await self._get("usercollection/daily_activity", params)
+        daily_sleep = await self._get("usercollection/daily_sleep", same_day_params)
+        # The /sleep endpoint filters by bedtime_start (when the session began),
+        # not by the wake-up day. A same-day query misses overnight sessions that
+        # started the previous evening — which is almost every long_sleep. Widen
+        # the window to (d-1, d) and filter by the session's `day` field below.
+        sleep_params = {
+            "start_date": (day - timedelta(days=1)).isoformat(),
+            "end_date": d,
+        }
+        sleep = await self._get("usercollection/sleep", sleep_params)
+        daily_readiness = await self._get(
+            "usercollection/daily_readiness", same_day_params
+        )
+        daily_activity = await self._get(
+            "usercollection/daily_activity", same_day_params
+        )
 
         sleep_score = _first(daily_sleep, "score")
         readiness = _first(daily_readiness, "score")
         temp_dev = _first(daily_readiness, "temperature_deviation")
 
-        primary_sleep = _longest_sleep_session(sleep.get("data", []))
+        # Only keep sessions whose `day` matches the target (drops previous-day
+        # naps that happened to fall inside the widened window).
+        same_day_sessions = [
+            s for s in sleep.get("data", []) if s.get("day") == d
+        ]
+        primary_sleep = _longest_sleep_session(same_day_sessions)
         total_sec = (primary_sleep or {}).get("total_sleep_duration")
         awake_sec = (primary_sleep or {}).get("awake_time")
         rem_sec = (primary_sleep or {}).get("rem_sleep_duration")
