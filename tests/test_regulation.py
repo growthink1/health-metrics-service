@@ -105,9 +105,39 @@ async def test_compute_signals_with_three_days_data(db_session, test_user_id):
 
 
 @pytest.mark.asyncio
-async def test_compute_signals_with_no_data_returns_zero_baselines(db_session, test_user_id):
+async def test_compute_signals_with_no_data_returns_none_sleep(db_session, test_user_id):
+    """Missing-data is signaled with sleep_3d_min=None, NOT 0.0 — preventing the
+    false-positive 'severe sleep deprivation' DELOAD that the < 300 floor would
+    otherwise trigger. See regulate()'s None short-circuit."""
     signals = await compute_regulation_signals(
         db_session, user_id=test_user_id, anchor=date(2026, 5, 13)
     )
     assert signals.days_with_complete_data == 0
     assert signals.subjective_3d_energy is None
+    assert signals.sleep_3d_min is None
+
+
+def test_missing_sleep_short_circuits_to_maintenance_not_deload():
+    """When sleep_3d_min is None (no Oura sleep data), regulate() must NOT
+    silently treat it as 0 and trigger the < 300 'severe sleep deprivation'
+    DELOAD. Should default to maintenance with a clear no-data rationale."""
+    s = RegulationSignals(
+        hrv_z_3d=0.0, rhr_z_3d=0.0, sleep_3d_min=None,
+        sleep_debt_min=0.0, strain_7d_total=70,
+        subjective_3d_energy=None, days_with_complete_data=0,
+    )
+    rec, rationale, payload = regulate(s)
+    assert rec == "maintenance"
+    assert any("sleep data unavailable" in r.lower() for r in rationale)
+
+
+def test_missing_sleep_with_real_whoop_strain_still_maintenance():
+    """Even with elevated Whoop strain data, missing sleep must not flip to
+    deload — the conservative default is maintenance until sleep is known."""
+    s = RegulationSignals(
+        hrv_z_3d=-0.5, rhr_z_3d=0.5, sleep_3d_min=None,
+        sleep_debt_min=0.0, strain_7d_total=110,  # would be deficit_conservative with data
+        subjective_3d_energy=None, days_with_complete_data=0,
+    )
+    rec, _, _ = regulate(s)
+    assert rec == "maintenance"

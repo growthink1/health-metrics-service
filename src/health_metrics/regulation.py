@@ -18,7 +18,7 @@ from .models import DailyMetrics, ManualLog
 class RegulationSignals:
     hrv_z_3d: float                       # avg z-score over last 3 days vs 14d baseline
     rhr_z_3d: float
-    sleep_3d_min: float                   # avg minutes over last 3 days
+    sleep_3d_min: float | None            # avg minutes over last 3 days; None if no sleep data
     sleep_debt_min: float                 # from Whoop (positive = behind)
     strain_7d_total: float
     subjective_3d_energy: float | None    # 1-10, None if missing
@@ -31,6 +31,17 @@ RecType = Literal["deficit", "deficit_conservative", "maintenance", "deload"]
 def regulate(s: RegulationSignals) -> tuple[RecType, list[str], dict]:
     """Return (recommendation, rationale_list, action_payload)."""
     rationale: list[str] = []
+
+    # Sleep data unavailable (Oura outage, charging strap, ingestion gap, etc.):
+    # do NOT silently treat as zero — the < 300 floor would otherwise false-positive
+    # DELOAD on every missing-data day. Default to maintenance with a clear rationale.
+    if s.sleep_3d_min is None:
+        rationale.append("Sleep data unavailable — using conservative default")
+        return (
+            "maintenance",
+            rationale,
+            {"kcal": 2800, "training": "Full program, no progression push"},
+        )
 
     recovery_score = (
         -0.50 * s.hrv_z_3d
@@ -181,7 +192,9 @@ async def compute_regulation_signals(
     return RegulationSignals(
         hrv_z_3d=_avg(hrv_zs),
         rhr_z_3d=_avg(rhr_zs),
-        sleep_3d_min=_avg(sleep_mins) if sleep_mins else 0.0,
+        # Missing-data is None, NOT 0.0 — the regulate() short-circuit relies on this
+        # distinction to avoid the false-positive < 300 'severe sleep' DELOAD.
+        sleep_3d_min=_avg(sleep_mins) if sleep_mins else None,
         sleep_debt_min=_avg(sleep_debts) if sleep_debts else 0.0,
         strain_7d_total=strain_total,
         subjective_3d_energy=_avg(energies) if energies else None,
