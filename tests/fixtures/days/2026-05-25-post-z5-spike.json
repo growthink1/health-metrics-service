@@ -1,0 +1,37 @@
+{
+  "snapshot": {
+    "user_id": "hugo",
+    "as_of_date": "2026-05-25",
+    "last_night_sleep_min": 410,
+    "sleep_3d_avg_min": 420.0,
+    "recovery_today": 74,
+    "hrv_z_3d": 0.45,
+    "consecutive_days_below_baseline": 0,
+    "strain_7d_mean": 10.1,
+    "last_workout_max_hr_pct_age_predicted": 0.97,
+    "active_events": [
+      {
+        "event_type": "dental_procedure",
+        "status": "pending",
+        "expected_resolution": "2026-06-04",
+        "started_at": "2026-05-23"
+      }
+    ],
+    "history_days_count": 30,
+    "oura_present_today": true,
+    "whoop_present_today": true,
+    "subjective_logged_within_48h": true
+  },
+  "expected": {
+    "state": "MAINTENANCE_PRE_PROCEDURE",
+    "training_modifier": "VOLUME_MINUS_20",
+    "kcal_target": 2800,
+    "overrides_today_superset": [
+      "no_deficit_pre_procedure",
+      "no_z4_plus",
+      "rpe_cap_7",
+      "watch_jaw_load"
+    ],
+    "confidence_at_most": "high"
+  }
+}

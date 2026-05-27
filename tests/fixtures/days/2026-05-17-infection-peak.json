@@ -1,0 +1,32 @@
+{
+  "snapshot": {
+    "user_id": "hugo",
+    "as_of_date": "2026-05-17",
+    "last_night_sleep_min": null,
+    "sleep_3d_avg_min": null,
+    "recovery_today": 6,
+    "hrv_z_3d": -1.18,
+    "consecutive_days_below_baseline": 3,
+    "strain_7d_mean": 5.77,
+    "last_workout_max_hr_pct_age_predicted": null,
+    "active_events": [
+      {
+        "event_type": "acute_infection",
+        "status": "active",
+        "expected_resolution": "2026-05-18",
+        "started_at": "2026-05-14"
+      }
+    ],
+    "history_days_count": 28,
+    "oura_present_today": false,
+    "whoop_present_today": true,
+    "subjective_logged_within_48h": false
+  },
+  "expected": {
+    "state": "MAINTENANCE_ILLNESS",
+    "training_modifier": "REST",
+    "kcal_target": 2800,
+    "overrides_today_superset": ["no_training"],
+    "confidence_at_most": "medium"
+  }
+}
