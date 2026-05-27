@@ -8,11 +8,19 @@ be retired in PR 5 of the session-brief sprint.
 New code should import from .engine + .schemas directly.
 """
 
+from .engine import compute_regulation
 from .legacy import (
     RecType,
     RegulationSignals,
     compute_regulation_signals,
     regulate,
+)
+from .schemas import (
+    DailySnapshot,
+    HealthEventSnapshot,
+    RegulationCall,
+    RegulationState,
+    TrainingModifier,
 )
 
 __all__ = [
@@ -20,4 +28,10 @@ __all__ = [
     "RecType",
     "regulate",
     "compute_regulation_signals",
+    "compute_regulation",
+    "RegulationState",
+    "TrainingModifier",
+    "RegulationCall",
+    "DailySnapshot",
+    "HealthEventSnapshot",
 ]

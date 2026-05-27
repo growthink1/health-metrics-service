@@ -8,13 +8,13 @@ get_session_brief tool, and the dashboard's daily card).
 from __future__ import annotations
 
 from datetime import date as date_type
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
-class RegulationState(str, Enum):
+class RegulationState(StrEnum):
     MAINTENANCE_SLEEP_DEFICIT = "MAINTENANCE_SLEEP_DEFICIT"
     MAINTENANCE_ILLNESS = "MAINTENANCE_ILLNESS"
     MAINTENANCE_PRE_PROCEDURE = "MAINTENANCE_PRE_PROCEDURE"
@@ -23,7 +23,7 @@ class RegulationState(str, Enum):
     DEFICIT = "DEFICIT"
 
 
-class TrainingModifier(str, Enum):
+class TrainingModifier(StrEnum):
     REST = "REST"
     Z2_ONLY = "Z2_ONLY"
     VOLUME_MINUS_30_NO_HIIT = "VOLUME_MINUS_30_NO_HIIT"
