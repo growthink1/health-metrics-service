@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: health_metrics_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install deps
+        run: uv pip install --system -r requirements.txt -r requirements-dev.txt
+
+      - name: Run alembic migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
+        run: alembic upgrade head
+
+      - name: ruff check
+        run: ruff check src/health_metrics/regulation/ tests/regulation/ scripts/
+
+      - name: ruff format check
+        run: ruff format --check src/health_metrics/regulation/ tests/regulation/ scripts/
+
+      - name: mypy (strict on new regulation engine + schemas)
+        # legacy.py is slated for retirement in PR 5 of the session-brief sprint;
+        # excluded from strict gate so existing dataclass+SQLAlchemy code doesn't
+        # block the engine's strict typing baseline.
+        run: mypy --strict src/health_metrics/regulation/engine.py src/health_metrics/regulation/schemas.py
+
+      - name: pytest (regulation 100% gate)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
+        # 100% line + branch coverage on the engine.py decision tree.
+        # legacy.py is intentionally not on the gated module list -- it is slated
+        # for retirement in PR 5 of the session-brief sprint.
+        run: pytest tests/regulation/ --cov=health_metrics.regulation.engine --cov-branch --cov-report=term-missing --cov-fail-under=100
+
+      - name: pytest (full suite)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
+        run: pytest
