@@ -1,5 +1,6 @@
 """SQLAlchemy ORM models — mirrors docs/spec.md §3 schema."""
 
+import uuid
 from datetime import date as date_type, datetime, time as time_type
 from decimal import Decimal
 from typing import Any, Optional
@@ -7,18 +8,20 @@ from typing import Any, Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     Text,
     Time,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -122,6 +125,8 @@ class ManualLog(Base):
     subjective_energy: Mapped[Optional[int]] = mapped_column(Integer)
     subjective_mood: Mapped[Optional[int]] = mapped_column(Integer)
     subjective_hunger: Mapped[Optional[int]] = mapped_column(Integer)
+    soreness_1_10: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    sleep_subjective_1_10: Mapped[Optional[int]] = mapped_column(SmallInteger)
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
@@ -292,3 +297,79 @@ class GoalRecommendation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
     __table_args__ = (UniqueConstraint("goal_id", "rec_date", name="uq_goal_recommendations_goal_date"),)
+
+
+class HealthEvent(Base):
+    """Tracks acute health events that gate training/nutrition regulation.
+
+    See docs/superpowers/specs/2026-05-26-session-brief-design.md §3.1.
+    """
+
+    __tablename__ = "health_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[Optional[date_type]] = mapped_column(Date)
+    expected_resolution: Mapped[Optional[date_type]] = mapped_column(Date)
+    affects: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        nullable=False,
+        server_default=text("'{}'::text[]"),
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('dental_procedure','acute_infection','antibiotic_course',"
+            "'fever','injury','scheduled_lab_draw','scheduled_dexa','scheduled_sleep_study')",
+            name="health_events_event_type_check",
+        ),
+        CheckConstraint(
+            "status IN ('active','pending','resolving','resolved')",
+            name="health_events_status_check",
+        ),
+        Index("health_events_user_status_idx", "user_id", "status"),
+        Index(
+            "health_events_expected_idx",
+            "expected_resolution",
+            postgresql_where=text("status IN ('pending','active','resolving')"),
+        ),
+    )
+
+
+class RegulationCache(Base):
+    """Cached session-brief JSON keyed on (user_id, as_of_date).
+
+    See docs/superpowers/specs/2026-05-26-session-brief-design.md §3.1.
+    """
+
+    __tablename__ = "regulation_cache"
+
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    as_of_date: Mapped[date_type] = mapped_column(Date, primary_key=True, nullable=False)
+    brief_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    cached_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
+    )
+    latest_ingestion_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    latest_write_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        Index("regulation_cache_cached_at_idx", "cached_at"),
+    )
