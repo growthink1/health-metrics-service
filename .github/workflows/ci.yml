@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: health_metrics_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install deps
+        run: uv pip install --system -r requirements.txt -r requirements-dev.txt
+
+      - name: Run alembic migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
+        run: alembic upgrade head
+
+      - name: ruff check
+        run: ruff check src/health_metrics/regulation/ tests/regulation/ scripts/
+
+      - name: ruff format check
+        run: ruff format --check src/health_metrics/regulation/ tests/regulation/ scripts/
+
+      - name: mypy (strict on regulation package)
+        run: mypy --strict src/health_metrics/regulation/
+
+      - name: pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
+        run: pytest --cov=src/health_metrics/regulation --cov-report=term-missing --cov-fail-under=100
