@@ -11,7 +11,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import DailyMetrics, ManualLog
+from ..models import DailyMetrics, ManualLog
 
 
 @dataclass
