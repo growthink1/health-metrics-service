@@ -56,7 +56,15 @@ jobs:
         # block the engine's strict typing baseline.
         run: mypy --strict src/health_metrics/regulation/engine.py src/health_metrics/regulation/schemas.py
 
-      - name: pytest
+      - name: pytest (regulation 100% gate)
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
-        run: pytest --cov=src/health_metrics/regulation --cov-report=term-missing --cov-fail-under=100
+        # 100% line + branch coverage on the engine.py decision tree.
+        # legacy.py is intentionally not on the gated module list -- it is slated
+        # for retirement in PR 5 of the session-brief sprint.
+        run: pytest tests/regulation/ --cov=health_metrics.regulation.engine --cov-branch --cov-report=term-missing --cov-fail-under=100
+
+      - name: pytest (full suite)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
+        run: pytest
