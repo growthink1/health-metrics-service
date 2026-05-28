@@ -15,7 +15,8 @@ def test_build_scheduler_registers_both_daily_jobs():
             "daily_ingest_yesterday",
             "daily_ingest_today",
             "daily_goals_v4",
-        }, f"expected three jobs, got {list(jobs.keys())}"
+            "session_brief_v1",
+        }, f"expected four jobs, got {list(jobs.keys())}"
 
         # 06:00 ET job — ingests yesterday
         y = jobs["daily_ingest_yesterday"]
@@ -39,6 +40,15 @@ def test_build_scheduler_registers_both_daily_jobs():
         assert str(hour_field) == "9", f"daily_goals job hour: expected 9, got {hour_field}"
         assert str(minute_field) == "15", f"daily_goals job minute: expected 15, got {minute_field}"
         assert str(g.trigger.timezone) == "America/New_York"
+
+        # 09:20 ET job — post-ingest session-brief refresh (PR 3)
+        sb = jobs["session_brief_v1"]
+        assert isinstance(sb.trigger, CronTrigger)
+        hour_field = next(f for f in sb.trigger.fields if f.name == "hour")
+        minute_field = next(f for f in sb.trigger.fields if f.name == "minute")
+        assert str(hour_field) == "9", f"session_brief job hour: expected 9, got {hour_field}"
+        assert str(minute_field) == "20", f"session_brief job minute: expected 20, got {minute_field}"
+        assert str(sb.trigger.timezone) == "America/New_York"
     finally:
         if sched.running:
             sched.shutdown(wait=False)
