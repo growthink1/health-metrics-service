@@ -11,6 +11,7 @@ from .jobs.scheduler import build_scheduler
 from .routes import health as health_route, ingest as ingest_route, api as api_route
 from .routes.chat import router as chat_router
 from .routes.goals import router as goals_router
+from .routes.manual_entry import router as manual_entry_router
 from .routes.meals import router as meals_router
 from .routes.session_brief import router as session_brief_router
 from .routes.workout_sets import router as workout_sets_router
@@ -57,6 +58,7 @@ app.include_router(workout_sets_router)
 app.include_router(workouts_manual_router)
 app.include_router(goals_router)
 app.include_router(session_brief_router)
+app.include_router(manual_entry_router)
 
 log.info("app_initialized", version="0.1.0", user_id=settings.user_id)
 
