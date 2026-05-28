@@ -15,7 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .chat_tools import TOOL_DEFINITIONS
 from .models import DailyMetrics, Goal, GoalRecommendation
-from .regulation import compute_regulation_signals, regulate
+# The 7-state engine (via the legacy adapter) is the single source of truth
+# for rec_type / rationale / action — Invariant #1.
+# compute_regulation_signals() is still consumed here for the body block that
+# surfaces hrv_z_3d / rhr_z_3d / sleep_debt / strain_total / subjective averages
+# to Claude. That dataclass remains in regulation/legacy.py until the prompt
+# body is migrated to the new SessionBrief shape (separate cleanup PR).
+from .regulation import compute_regulation_signals
+from .regulation.legacy_adapter import compute_legacy_recommendation
 from .routes.api import _read_metric
 
 _INTERVIEW_ADDENDUM = """
@@ -46,10 +53,11 @@ async def build_system_prompt(
     """Compose the system prompt for the /api/chat Anthropic call."""
     anchor = anchor or date_type.today()
 
-    # 1. Today's recommendation
+    # 1. Today's recommendation — via the 7-state engine (Invariant #1).
+    rec_type, rationale, action = await compute_legacy_recommendation(session, user_id, anchor)
+    # Signals dataclass still feeds the body block below until the prompt is
+    # migrated to the new SessionBrief shape.
     signals = await compute_regulation_signals(session, user_id=user_id, anchor=anchor)
-    # regulate() returns (RecType, rationale_list, action_payload)
-    rec_type, rationale, action = regulate(signals)
     suggested_kcal = action.get("kcal", "N/A")
     suggested_training_mod = action.get("training", "N/A")
 

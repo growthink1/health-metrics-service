@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..models import (DailyMetrics, Goal, GoalRecommendation, ManualLog, Meal,
                        Milestone, Subgoal, Workout)
-from ..regulation import compute_regulation_signals, regulate
+from ..regulation.legacy_adapter import compute_legacy_recommendation
 from .projection import project_habit, project_hrv, project_strength, project_weight
 
 log = structlog.get_logger()
@@ -408,8 +408,11 @@ async def daily_goal_recompute(
     projection = await project_to_deadline(session, goal, anchor, current_value=current_value)
     await update_milestones(session, goal, current_value, anchor)
 
-    signals = await compute_regulation_signals(session, user_id=goal.user_id, anchor=anchor)
-    rec_type, _rationale, _payload = regulate(signals)
+    # Invariant #1: the 7-state engine (via the adapter) is the single source
+    # of truth for rec_type — used by compose_actions to bias the action list.
+    rec_type, _rationale, _payload = await compute_legacy_recommendation(
+        session, goal.user_id, anchor
+    )
 
     res = await session.execute(select(Subgoal).where(Subgoal.goal_id == goal.id))
     subgoals = list(res.scalars().all())

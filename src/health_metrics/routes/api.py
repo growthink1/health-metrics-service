@@ -17,7 +17,15 @@ from ..config import get_settings
 from ..db import AsyncSessionLocal
 from ..models import DailyMetrics, ManualLog, Workout
 from ..narration import generate_narration
-from ..regulation import compute_regulation_signals, regulate
+# Invariant #1: the 7-state engine (via the legacy adapter) is the single
+# source of truth for rec_type / rationale / action. compute_regulation_signals
+# is still computed here because narration.generate_narration takes the legacy
+# RegulationSignals dataclass for cache-key + prompt context, and the dashboard
+# strip surfaces hrv_z_3d_avg (a 3-day average — the new engine's snapshot
+# carries a single-day z, so we can't read it from the brief). Both stay until
+# narration is migrated to the new SessionBrief shape (separate cleanup PR).
+from ..regulation import compute_regulation_signals
+from ..regulation.legacy_adapter import compute_legacy_recommendation
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
@@ -155,9 +163,12 @@ async def dashboard_today(
         )
         ml = res.scalar_one_or_none()
 
-        # Compute regulation
+        # Compute regulation — rec via the adapter (engine = source of truth),
+        # signals still computed for narration + the hrv_z_3d_avg field below.
+        recommendation, rationale, payload = await compute_legacy_recommendation(
+            session, uid, anchor
+        )
         signals = await compute_regulation_signals(session, uid, anchor)
-        recommendation, rationale, payload = regulate(signals)
 
         # Narration (cached + content-addressed)
         narration = await generate_narration(
