@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import structlog
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,16 +31,18 @@ def _session_factory() -> AsyncIterator[AsyncSession]:
 
 
 class ManualEntryPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     user_id: str = "hugo"
-    log_date: date_type = Field(default_factory=date_type.today)
+    log_date: date_type = Field(default_factory=date_type.today, alias="entry_date")
     weight_lbs: float | None = None
     kcal_consumed: int | None = None
     protein_g: int | None = None
     fat_g: int | None = None
     carbs_g: int | None = None
-    subjective_energy: int | None = Field(default=None, ge=1, le=10)
-    subjective_mood: int | None = Field(default=None, ge=1, le=10)
-    subjective_hunger: int | None = Field(default=None, ge=1, le=10)
+    subjective_energy: int | None = Field(default=None, ge=1, le=10, alias="energy_1_10")
+    subjective_mood: int | None = Field(default=None, ge=1, le=10, alias="mood_1_10")
+    subjective_hunger: int | None = Field(default=None, ge=1, le=10, alias="hunger_1_10")
     soreness_1_10: int | None = Field(default=None, ge=1, le=10)
     sleep_subjective_1_10: int | None = Field(default=None, ge=1, le=10)
     notes: str | None = None

@@ -211,6 +211,64 @@ Two open questions worth resolving before PR 1:
 - Railway env var to add: none new on health-metrics-service. mcp-unified-server gets `HEALTH_API_URL` + `HEALTH_API_TOKEN`.
 - Dashboard env var: same `HEALTH_API_URL` + a separate `HEALTH_API_TOKEN_DASHBOARD` for audit-trail separation.
 
+## 13. `regulation_overrides` — design note (PR 7, queued)
+
+**Problem.** Validation of PRs 1–6 surfaced no mechanism for manual overrides
+of the regulation call. Hugo's 2026-05-27 doctor-verified kcal recalibration
+(target 2800 → 2500 for the pre-procedure healing buffer) has no system
+representation today. Operators currently work around this by mentally
+discounting the brief, which defeats the point of a grounded brief.
+
+**Proposed schema** (per CLAUDE_MEMORY.md §9D):
+
+```sql
+CREATE TABLE regulation_overrides (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     TEXT NOT NULL,
+    field       TEXT NOT NULL,            -- 'kcal_target', 'protein_g_target', 'state', etc.
+    value       JSONB NOT NULL,           -- type-flexible scalar/list
+    justification TEXT NOT NULL,
+    valid_from  DATE NOT NULL,
+    valid_until DATE NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at  TIMESTAMPTZ,
+    revoked_reason TEXT
+);
+CREATE INDEX idx_reg_overrides_user_active ON regulation_overrides (user_id, valid_from, valid_until)
+    WHERE revoked_at IS NULL;
+```
+
+**Behavior.** `compute_regulation()` gains a final-pass step that loads active
+overrides — those with `revoked_at IS NULL` AND `valid_from <= today <= valid_until`
+— and applies them on top of the engine's `RegulationCall`. When multiple
+overrides target the same field, the most-recently-`created_at` wins. The
+returned brief gains a new field `applied_overrides: list[AppliedOverride]`
+documenting which overrides modified the call (so the dashboard and chat can
+surface "you're seeing 2500 kcal instead of the engine's 2800 because <reason>").
+
+**New endpoints.**
+
+- `POST /api/v1/regulation-overrides` — create an override.
+- `PATCH /api/v1/regulation-overrides/{id}/revoke` — revoke with `reason`.
+
+**New MCP tools.**
+
+- `set_regulation_override(field, value, justification, valid_from, valid_until)`
+- `revoke_regulation_override(id, reason)`
+- `list_regulation_overrides(user_id, active_only?)`
+
+**Backfill plan.** Hugo's 2500 kcal_target override:
+
+- `field`: `kcal_target`
+- `value`: `2500`
+- `justification`: "Doctor-verified infection resolution + observed sub-maintenance pattern. Reverts to maintenance 2026-06-02 for pre-procedure healing buffer."
+- `valid_from`: `2026-05-27`
+- `valid_until`: `2026-06-01`
+
+**Not in scope for this PR.** PR 7 will implement schema migration, engine
+final-pass, endpoints, MCP tools, and the dashboard surface. This section is
+design-only.
+
 ---
 
 *Spec drafted via subagent-driven-development workflow. Acceptance gate = all 7 fixtures pass + 100% coverage on `app/regulation/`. Closes claude.ai daily-brief design loop.*
