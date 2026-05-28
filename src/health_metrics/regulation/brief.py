@@ -153,7 +153,9 @@ async def _subjective_logged_within_48h(session: AsyncSession, user_id: str, as_
     return (r.scalar_one() or 0) > 0
 
 
-async def _weight_trend(session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14) -> WeightTrend:
+async def compute_weight_trend(
+    session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14
+) -> WeightTrend:
     r = await session.execute(
         select(ManualLog.log_date, ManualLog.weight_lbs)
         .where(
@@ -209,7 +211,7 @@ async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date
     active_events = await _active_events(session, user_id)
     history_days_count = await _history_days_count(session, user_id)
     subjective_48h = await _subjective_logged_within_48h(session, user_id, as_of)
-    weight_trend = await _weight_trend(session, user_id, as_of)
+    weight_trend = await compute_weight_trend(session, user_id, as_of)
 
     snap = DailySnapshot(
         user_id=user_id,

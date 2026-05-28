@@ -16,6 +16,7 @@ from .routes.manual_entry import router as manual_entry_router
 from .routes.meals import router as meals_router
 from .routes.meals_v1 import router as meals_v1_router
 from .routes.session_brief import router as session_brief_router
+from .routes.weight_trend import router as weight_trend_router
 from .routes.workout_sets import router as workout_sets_router
 from .routes.workouts_history import router as workouts_history_router
 from .routes.workouts_manual import router as workouts_manual_router
@@ -65,6 +66,7 @@ app.include_router(manual_entry_router)
 app.include_router(meals_v1_router)
 app.include_router(health_events_router)
 app.include_router(workouts_history_router)
+app.include_router(weight_trend_router)
 
 log.info("app_initialized", version="0.1.0", user_id=settings.user_id)
 
