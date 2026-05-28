@@ -1,6 +1,6 @@
 """Brief builder tests -- compose data fetchers + compute_regulation."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,9 +11,7 @@ from health_metrics.regulation.schemas import RegulationState
 
 
 @pytest.mark.asyncio
-async def test_compute_session_brief_with_no_data_returns_low_confidence(
-    db_session, test_user_id
-):
+async def test_compute_session_brief_with_no_data_returns_low_confidence(db_session, test_user_id):
     """Empty DB -> confidence low, missing_inputs non-empty."""
     brief = await compute_session_brief(db_session, test_user_id, date(2026, 5, 26))
     assert brief.confidence == "low"
@@ -63,9 +61,7 @@ async def test_compute_session_brief_uses_daily_metrics(db_session, test_user_id
 
 
 @pytest.mark.asyncio
-async def test_compute_session_brief_with_pending_dental_routes_pre_procedure(
-    db_session, test_user_id
-):
+async def test_compute_session_brief_with_pending_dental_routes_pre_procedure(db_session, test_user_id):
     """Pending dental_procedure event within 14d -> MAINTENANCE_PRE_PROCEDURE."""
     as_of = date(2026, 5, 26)
     db_session.add(
@@ -92,9 +88,7 @@ async def test_compute_session_brief_with_pending_dental_routes_pre_procedure(
 
 
 @pytest.mark.asyncio
-async def test_compute_session_brief_recent_workouts_returned(
-    db_session, test_user_id
-):
+async def test_compute_session_brief_recent_workouts_returned(db_session, test_user_id):
     """Two workouts in last 7 days -> brief.recent_workouts has 2 entries desc."""
     as_of = date(2026, 5, 26)
     db_session.add(
@@ -104,7 +98,7 @@ async def test_compute_session_brief_recent_workouts_returned(
             source="test",
             source_id="w1",
             workout_type="strength",
-            started_at=datetime(2026, 5, 23, 8, 0, tzinfo=timezone.utc),
+            started_at=datetime(2026, 5, 23, 8, 0, tzinfo=UTC),
             duration_min=45,
             max_hr=140,
             strain=Decimal("8.5"),
@@ -117,7 +111,7 @@ async def test_compute_session_brief_recent_workouts_returned(
             source="test",
             source_id="w2",
             workout_type="cardio",
-            started_at=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+            started_at=datetime(2026, 5, 25, 8, 0, tzinfo=UTC),
             duration_min=30,
             max_hr=160,
             strain=Decimal("11.0"),

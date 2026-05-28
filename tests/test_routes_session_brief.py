@@ -1,7 +1,6 @@
 """Tests for GET /api/v1/session-brief."""
 
 from contextlib import asynccontextmanager
-from datetime import date
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -27,9 +26,7 @@ async def test_session_brief_401_without_token(db_session, monkeypatch, test_use
 
 
 @pytest.mark.asyncio
-async def test_session_brief_returns_brief_with_dashboard_token(
-    db_session, monkeypatch, test_user_id
-):
+async def test_session_brief_returns_brief_with_dashboard_token(db_session, monkeypatch, test_user_id):
     """Valid dashboard token + cold cache → recompute + write back + return."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
     from health_metrics.routes import session_brief as sb_route
@@ -69,9 +66,7 @@ async def test_session_brief_accepts_mcp_token(db_session, monkeypatch, test_use
 
 
 @pytest.mark.asyncio
-async def test_session_brief_cache_hit_returns_same_generated_at(
-    db_session, monkeypatch, test_user_id
-):
+async def test_session_brief_cache_hit_returns_same_generated_at(db_session, monkeypatch, test_user_id):
     """Second request after a cold-cache write returns the cached brief
     (same generated_at timestamp — proves the cache was hit, not recomputed)."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")

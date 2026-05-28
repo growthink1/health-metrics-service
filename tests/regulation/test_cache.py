@@ -1,6 +1,6 @@
 """Cache layer tests -- TTL, write-triggered invalidation, ingestion-triggered invalidation."""
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -33,7 +33,7 @@ def _minimal_brief(user_id: str, as_of: date) -> SessionBrief:
         ),
         daily_snapshot=DailySnapshot(user_id=user_id, as_of_date=as_of),
         confidence="high",
-        generated_at=datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 5, 26, 12, 0, tzinfo=UTC),
     )
 
 
@@ -118,7 +118,7 @@ async def test_cache_invalidated_when_new_ingestion(db_session, test_user_id):
         DailyMetrics(
             user_id=test_user_id,
             metric_date=date(2026, 5, 26),
-            ingested_at=datetime(2026, 5, 26, 6, 0, tzinfo=timezone.utc),
+            ingested_at=datetime(2026, 5, 26, 6, 0, tzinfo=UTC),
         )
     )
     await db_session.flush()
@@ -132,9 +132,7 @@ async def test_cache_invalidated_when_new_ingestion(db_session, test_user_id):
         DailyMetrics(
             user_id=test_user_id,
             metric_date=date(2026, 5, 25),
-            ingested_at=datetime(
-                2026, 5, 26, 12, 0, tzinfo=timezone.utc
-            ),  # newer than cache's snapshot
+            ingested_at=datetime(2026, 5, 26, 12, 0, tzinfo=UTC),  # newer than cache's snapshot
         )
     )
     await db_session.flush()

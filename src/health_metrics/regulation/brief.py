@@ -3,7 +3,8 @@
 Composes: data fetchers -> DailySnapshot -> compute_regulation -> SessionBrief.
 """
 
-from datetime import date as date_type, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import date as date_type
 
 import structlog
 from sqlalchemy import func, select
@@ -32,9 +33,7 @@ def _age_predicted_max_hr(user_id: str) -> int:
     return 220 - age
 
 
-async def _consecutive_days_below_baseline(
-    session: AsyncSession, user_id: str, as_of: date_type
-) -> int:
+async def _consecutive_days_below_baseline(session: AsyncSession, user_id: str, as_of: date_type) -> int:
     r = await session.execute(
         select(DailyMetrics.metric_date, DailyMetrics.unified_hrv_z)
         .where(
@@ -53,9 +52,7 @@ async def _consecutive_days_below_baseline(
     return n
 
 
-async def _sleep_3d_avg(
-    session: AsyncSession, user_id: str, as_of: date_type
-) -> float | None:
+async def _sleep_3d_avg(session: AsyncSession, user_id: str, as_of: date_type) -> float | None:
     r = await session.execute(
         select(func.avg(DailyMetrics.oura_sleep_duration_min)).where(
             DailyMetrics.user_id == user_id,
@@ -68,9 +65,7 @@ async def _sleep_3d_avg(
     return float(v) if v is not None else None
 
 
-async def _strain_7d_mean(
-    session: AsyncSession, user_id: str, as_of: date_type
-) -> float:
+async def _strain_7d_mean(session: AsyncSession, user_id: str, as_of: date_type) -> float:
     r = await session.execute(
         select(func.avg(DailyMetrics.whoop_day_strain)).where(
             DailyMetrics.user_id == user_id,
@@ -118,9 +113,7 @@ async def _last_workout_max_hr_pct(
     return None, summaries
 
 
-async def _active_events(
-    session: AsyncSession, user_id: str
-) -> list[HealthEventSnapshot]:
+async def _active_events(session: AsyncSession, user_id: str) -> list[HealthEventSnapshot]:
     r = await session.execute(
         select(HealthEvent).where(
             HealthEvent.user_id == user_id,
@@ -138,9 +131,7 @@ async def _active_events(
     ]
 
 
-async def _history_days_count(
-    session: AsyncSession, user_id: str
-) -> int:
+async def _history_days_count(session: AsyncSession, user_id: str) -> int:
     r = await session.execute(
         select(func.count(func.distinct(DailyMetrics.metric_date))).where(
             DailyMetrics.user_id == user_id,
@@ -149,11 +140,11 @@ async def _history_days_count(
     return int(r.scalar_one() or 0)
 
 
-async def _subjective_logged_within_48h(
-    session: AsyncSession, user_id: str, as_of: date_type
-) -> bool:
+async def _subjective_logged_within_48h(session: AsyncSession, user_id: str, as_of: date_type) -> bool:
     r = await session.execute(
-        select(func.count()).select_from(ManualLog).where(
+        select(func.count())
+        .select_from(ManualLog)
+        .where(
             ManualLog.user_id == user_id,
             ManualLog.log_date >= as_of - timedelta(days=1),
             ManualLog.subjective_energy.is_not(None),
@@ -162,16 +153,16 @@ async def _subjective_logged_within_48h(
     return (r.scalar_one() or 0) > 0
 
 
-async def _weight_trend(
-    session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14
-) -> WeightTrend:
+async def _weight_trend(session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14) -> WeightTrend:
     r = await session.execute(
-        select(ManualLog.log_date, ManualLog.weight_lbs).where(
+        select(ManualLog.log_date, ManualLog.weight_lbs)
+        .where(
             ManualLog.user_id == user_id,
             ManualLog.weight_lbs.is_not(None),
             ManualLog.log_date >= as_of - timedelta(days=n_days),
             ManualLog.log_date <= as_of,
-        ).order_by(ManualLog.log_date.asc())
+        )
+        .order_by(ManualLog.log_date.asc())
     )
     rows = [(d, float(w)) for d, w in r.all()]
     if not rows:
@@ -198,9 +189,7 @@ async def _weight_trend(
     )
 
 
-async def compute_session_brief(
-    session: AsyncSession, user_id: str, as_of: date_type
-) -> SessionBrief:
+async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date_type) -> SessionBrief:
     r = await session.execute(
         select(DailyMetrics).where(
             DailyMetrics.user_id == user_id,
@@ -211,11 +200,7 @@ async def compute_session_brief(
 
     last_night_sleep = today_row.oura_sleep_duration_min if today_row else None
     recovery_today = today_row.whoop_recovery_score if today_row else None
-    hrv_z_3d = (
-        float(today_row.unified_hrv_z)
-        if (today_row and today_row.unified_hrv_z is not None)
-        else None
-    )
+    hrv_z_3d = float(today_row.unified_hrv_z) if (today_row and today_row.unified_hrv_z is not None) else None
 
     sleep_3d_avg = await _sleep_3d_avg(session, user_id, as_of)
     consecutive_below = await _consecutive_days_below_baseline(session, user_id, as_of)
@@ -238,12 +223,8 @@ async def compute_session_brief(
         last_workout_max_hr_pct_age_predicted=last_hr_pct,
         active_events=active_events,
         history_days_count=history_days_count,
-        oura_present_today=(
-            today_row is not None and today_row.oura_sleep_duration_min is not None
-        ),
-        whoop_present_today=(
-            today_row is not None and today_row.whoop_recovery_score is not None
-        ),
+        oura_present_today=(today_row is not None and today_row.oura_sleep_duration_min is not None),
+        whoop_present_today=(today_row is not None and today_row.whoop_recovery_score is not None),
         subjective_logged_within_48h=subjective_48h,
     )
     call = compute_regulation(snap)
@@ -311,5 +292,5 @@ async def compute_session_brief(
         flags=flags,
         missing_inputs=missing,
         confidence=call.confidence,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )

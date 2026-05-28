@@ -1,8 +1,8 @@
 """GET /api/v1/session-brief — cache-aware brief read."""
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date as date_type
-from typing import AsyncIterator
 
 import structlog
 from fastapi import APIRouter, Depends, Query
@@ -30,7 +30,7 @@ def _session_factory() -> AsyncIterator[AsyncSession]:
 @router.get("/session-brief", response_model=SessionBrief)
 async def session_brief(
     user_id: str = Query(default="hugo"),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_principal),  # noqa: B008
 ) -> SessionBrief:
     as_of = date_type.today()
     log.info(
