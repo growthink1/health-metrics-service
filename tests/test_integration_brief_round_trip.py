@@ -7,7 +7,7 @@ energy_1_10=7, hunger_1_10=8, soreness_1_10=3 — verify next get_session_brief 
 confidence=high instead of medium (no longer missing subjective_48h).'"""
 
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -42,7 +42,7 @@ async def test_manual_entry_round_trip_flips_confidence(db_session, monkeypatch,
                 unified_hrv_z=0.2,
                 unified_rhr_z=-0.1,
                 ingestion_complete=True,
-                ingested_at=datetime.now(timezone.utc),
+                ingested_at=datetime.now(UTC),
             )
         )
     await db_session.flush()
