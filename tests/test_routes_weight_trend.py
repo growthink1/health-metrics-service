@@ -1,7 +1,8 @@
 """Tests for GET /api/v1/weight-trend."""
 
 from contextlib import asynccontextmanager
-from datetime import date as date_type, timedelta
+from datetime import date as date_type
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -30,9 +31,7 @@ async def test_weight_trend_401_without_token(db_session, monkeypatch, test_user
 
 
 @pytest.mark.asyncio
-async def test_weight_trend_returns_delta_and_revealed_tdee(
-    db_session, monkeypatch, test_user_id
-):
+async def test_weight_trend_returns_delta_and_revealed_tdee(db_session, monkeypatch, test_user_id):
     """Seeds 3 weight + kcal entries; verifies delta + revealed_tdee math."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
     today = date_type.today()
@@ -75,9 +74,7 @@ async def test_weight_trend_returns_delta_and_revealed_tdee(
 
 
 @pytest.mark.asyncio
-async def test_weight_trend_validates_n_days_bounds(
-    db_session, monkeypatch, test_user_id
-):
+async def test_weight_trend_validates_n_days_bounds(db_session, monkeypatch, test_user_id):
     """n_days < 7 → 422, n_days > 180 → 422."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
     from health_metrics.routes import weight_trend as wt_route
@@ -101,9 +98,7 @@ async def test_weight_trend_validates_n_days_bounds(
 
 
 @pytest.mark.asyncio
-async def test_weight_trend_empty_data_returns_nulls(
-    db_session, monkeypatch, test_user_id
-):
+async def test_weight_trend_empty_data_returns_nulls(db_session, monkeypatch, test_user_id):
     """No ManualLog rows for user → WeightTrend with nulls."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
     from health_metrics.routes import weight_trend as wt_route

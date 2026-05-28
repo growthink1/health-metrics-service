@@ -1,7 +1,8 @@
 """Tests for GET /api/v1/workouts."""
 
 from contextlib import asynccontextmanager
-from datetime import date as date_type, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import date as date_type
 from decimal import Decimal
 
 import pytest
@@ -43,7 +44,7 @@ async def test_workouts_history_returns_recent_workouts(db_session, monkeypatch,
                 source="whoop",
                 source_id=f"w-{test_user_id}-{i}",
                 workout_type="strength",
-                started_at=datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc),
+                started_at=datetime.combine(d, datetime.min.time(), tzinfo=UTC),
                 duration_min=45,
                 avg_hr=140,
                 max_hr=170,
@@ -60,7 +61,7 @@ async def test_workouts_history_returns_recent_workouts(db_session, monkeypatch,
             source="whoop",
             source_id=f"w-{test_user_id}-old",
             workout_type="cardio",
-            started_at=datetime.combine(too_old, datetime.min.time(), tzinfo=timezone.utc),
+            started_at=datetime.combine(too_old, datetime.min.time(), tzinfo=UTC),
             duration_min=30,
             avg_hr=130,
             max_hr=160,
@@ -92,9 +93,7 @@ async def test_workouts_history_returns_recent_workouts(db_session, monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_workouts_history_validates_n_days_upper_bound(
-    db_session, monkeypatch, test_user_id
-):
+async def test_workouts_history_validates_n_days_upper_bound(db_session, monkeypatch, test_user_id):
     """n_days > 90 → 422."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
     from health_metrics.routes import workouts_history as wh_route
@@ -111,9 +110,7 @@ async def test_workouts_history_validates_n_days_upper_bound(
 
 
 @pytest.mark.asyncio
-async def test_workouts_history_age_predicted_max_hr_propagates(
-    db_session, monkeypatch, test_user_id
-):
+async def test_workouts_history_age_predicted_max_hr_propagates(db_session, monkeypatch, test_user_id):
     """max_hr_pct_age_predicted = max_hr / (220 - age). Default age 44 → 176."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
     today = date_type.today()
@@ -124,7 +121,7 @@ async def test_workouts_history_age_predicted_max_hr_propagates(
             source="whoop",
             source_id=f"w-{test_user_id}-hr",
             workout_type="cardio",
-            started_at=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc),
+            started_at=datetime.combine(today, datetime.min.time(), tzinfo=UTC),
             duration_min=60,
             avg_hr=150,
             max_hr=176,  # exactly age-predicted max for age 44 → 1.0

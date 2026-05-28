@@ -153,9 +153,7 @@ async def _subjective_logged_within_48h(session: AsyncSession, user_id: str, as_
     return (r.scalar_one() or 0) > 0
 
 
-async def compute_weight_trend(
-    session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14
-) -> WeightTrend:
+async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14) -> WeightTrend:
     r = await session.execute(
         select(ManualLog.log_date, ManualLog.weight_lbs)
         .where(
