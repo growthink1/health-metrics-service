@@ -67,6 +67,25 @@ async def _run_daily_goals(user_id: str) -> None:
             log.error("scheduler_tick_failed", job="daily_goals", error=str(e))
 
 
+async def _refresh_session_briefs(user_id: str) -> None:
+    """09:20 ET job — recompute today's session brief + write cache."""
+    from datetime import date as date_type
+
+    from ..regulation.brief import compute_session_brief
+    from ..regulation.cache import write_cache
+
+    log.info("scheduler_tick", job="session_brief", user_id=user_id)
+    today = date_type.today()
+    async with AsyncSessionLocal() as session:
+        try:
+            brief = await compute_session_brief(session, user_id, today)
+            await write_cache(session, user_id, today, brief)
+            await session.commit()
+            log.info("scheduler_tick_complete", job="session_brief", user_id=user_id)
+        except Exception as e:
+            log.error("scheduler_tick_failed", job="session_brief", error=str(e))
+
+
 def build_scheduler(user_id: str) -> AsyncIOScheduler:
     """Build (do not start) an AsyncIOScheduler with both daily-ingest jobs."""
     sched = AsyncIOScheduler(timezone=_SCHEDULER_TZ)
@@ -93,6 +112,15 @@ def build_scheduler(user_id: str) -> AsyncIOScheduler:
         trigger=CronTrigger(hour=9, minute=15, timezone=_SCHEDULER_TZ),
         kwargs={"user_id": user_id},
         id="daily_goals_v4",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+    sched.add_job(
+        _refresh_session_briefs,
+        trigger=CronTrigger(hour=9, minute=20, timezone=_SCHEDULER_TZ),
+        kwargs={"user_id": user_id},
+        id="session_brief_v1",
         replace_existing=True,
         max_instances=1,
         misfire_grace_time=3600,

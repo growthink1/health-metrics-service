@@ -8,6 +8,7 @@ get_session_brief tool, and the dashboard's daily card).
 from __future__ import annotations
 
 from datetime import date as date_type
+from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -91,3 +92,66 @@ class RegulationCall(BaseModel):
     overrides_today: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"]
+
+
+class WorkoutSummary(BaseModel):
+    """Projection of a recent workout for the brief -- subset of the workouts table."""
+
+    workout_date: date_type
+    workout_type: str | None = None
+    duration_min: int | None = None
+    avg_hr: int | None = None
+    max_hr: int | None = None
+    strain: float | None = None
+    kcal: int | None = None
+    max_hr_pct_age_predicted: float | None = None  # derived in the brief builder
+
+
+class TrendSummary(BaseModel):
+    """Short trend with current value + change vs window mean."""
+
+    metric: str  # e.g., "hrv", "rhr", "sleep_min", "strain_7d"
+    current: float | None = None
+    window_mean: float | None = None
+    delta: float | None = None  # current - window_mean
+
+
+class WeightTrend(BaseModel):
+    """Weight trajectory + revealed TDEE estimate."""
+
+    n_days: int
+    current_lbs: float | None = None
+    delta_lbs: float | None = None
+    revealed_tdee_kcal: int | None = None  # derived; null if insufficient data
+
+
+class Flag(BaseModel):
+    """User-visible alert from the brief."""
+
+    code: str  # e.g., "watchpoint_hrv", "sleep_debt_high"
+    severity: Literal["info", "watch", "alert"]
+    message: str
+
+
+class MissingInput(BaseModel):
+    """What's missing from today's snapshot (drives confidence)."""
+
+    field: str  # e.g., "oura_today", "whoop_today", "subjective_48h"
+    impact: Literal["confidence_degrades", "engine_skipped_rule"]
+    message: str | None = None
+
+
+class SessionBrief(BaseModel):
+    """Top-level brief returned by /api/v1/session-brief."""
+
+    as_of_date: date_type
+    user_id: str
+    regulation_call: RegulationCall
+    daily_snapshot: DailySnapshot
+    recent_workouts: list[WorkoutSummary] = Field(default_factory=list)
+    weight_trend: WeightTrend | None = None
+    active_events: list[HealthEventSnapshot] = Field(default_factory=list)
+    flags: list[Flag] = Field(default_factory=list)
+    missing_inputs: list[MissingInput] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"]
+    generated_at: datetime

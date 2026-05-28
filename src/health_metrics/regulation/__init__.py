@@ -17,10 +17,16 @@ from .legacy import (
 )
 from .schemas import (
     DailySnapshot,
+    Flag,
     HealthEventSnapshot,
+    MissingInput,
     RegulationCall,
     RegulationState,
+    SessionBrief,
     TrainingModifier,
+    TrendSummary,
+    WeightTrend,
+    WorkoutSummary,
 )
 
 __all__ = [
@@ -34,4 +40,10 @@ __all__ = [
     "RegulationCall",
     "DailySnapshot",
     "HealthEventSnapshot",
+    "WorkoutSummary",
+    "TrendSummary",
+    "WeightTrend",
+    "Flag",
+    "MissingInput",
+    "SessionBrief",
 ]

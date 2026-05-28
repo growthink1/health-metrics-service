@@ -45,16 +45,18 @@ jobs:
         run: alembic upgrade head
 
       - name: ruff check
-        run: ruff check src/health_metrics/regulation/ tests/regulation/ scripts/
+        run: ruff check src/health_metrics/regulation/ src/health_metrics/routes/auth.py src/health_metrics/routes/session_brief.py tests/regulation/ tests/test_routes_auth.py tests/test_routes_session_brief.py scripts/
 
       - name: ruff format check
-        run: ruff format --check src/health_metrics/regulation/ tests/regulation/ scripts/
+        run: ruff format --check src/health_metrics/regulation/ src/health_metrics/routes/auth.py src/health_metrics/routes/session_brief.py tests/regulation/ tests/test_routes_auth.py tests/test_routes_session_brief.py scripts/
 
-      - name: mypy (strict on new regulation engine + schemas)
+      - name: mypy (strict on new regulation engine + schemas + auth)
         # legacy.py is slated for retirement in PR 5 of the session-brief sprint;
         # excluded from strict gate so existing dataclass+SQLAlchemy code doesn't
-        # block the engine's strict typing baseline.
-        run: mypy --strict src/health_metrics/regulation/engine.py src/health_metrics/regulation/schemas.py
+        # block the engine's strict typing baseline. brief.py + cache.py do
+        # async-DB row access whose Optional/Decimal narrowing trips strict mypy;
+        # they are typed but not yet on the strict gate (PR 5 cleanup).
+        run: mypy --strict src/health_metrics/regulation/engine.py src/health_metrics/regulation/schemas.py src/health_metrics/routes/auth.py
 
       - name: pytest (regulation 100% gate)
         env:
