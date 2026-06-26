@@ -127,6 +127,10 @@ class WeightTrend(BaseModel):
     filtered_weight_lbs: float | None = None
     filtered_velocity_lbs_per_day: float | None = None
     revealed_tdee_confidence: Literal["high", "medium", "low"] | None = None
+    # Training-water retention model
+    training_water_offset_lbs: float | None = None  # today's retention deviation; +ve = above baseline
+    weight_dewatered_lbs: float | None = None  # raw − offset deviation; only when the gate passes
+    training_water_clears_by: date_type | None = None  # date the kernel decays below 0.2 lb
 
 
 class Flag(BaseModel):
