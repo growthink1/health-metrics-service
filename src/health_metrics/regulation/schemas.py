@@ -127,6 +127,9 @@ class WeightTrend(BaseModel):
     filtered_weight_lbs: float | None = None
     filtered_velocity_lbs_per_day: float | None = None
     revealed_tdee_confidence: Literal["high", "medium", "low"] | None = None
+    # Phase 2: glycogen-water regressor
+    glycogen_water_offset_lbs: float | None = None  # current est. deviation; +ve = water above baseline
+    weight_dewatered_lbs: float | None = None  # raw weight minus glycogen-water deviation
 
 
 class Flag(BaseModel):

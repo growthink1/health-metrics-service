@@ -11,8 +11,10 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import DailyMetrics, HealthEvent, ManualLog, Workout
+from ..models import DailyMetrics, HealthEvent, ManualLog, Meal, Workout
 from .engine import compute_regulation
+from .glycogen import DayPoint, estimate_glycogen_water
+from .glycogen_config import get_glycogen_params
 from .kalman import kalman_weight
 from .schemas import (
     DailySnapshot,
@@ -155,6 +157,43 @@ async def _subjective_logged_within_48h(session: AsyncSession, user_id: str, as_
     return (r.scalar_one() or 0) > 0
 
 
+def _downgrade_confidence(conf: str | None) -> str | None:
+    """One-notch downgrade used when the regressor is skipped (sparse carb logs)."""
+    return {"high": "medium", "medium": "low", "low": "low"}.get(conf or "", conf)
+
+
+async def _fetch_carbs_and_workouts(
+    session: AsyncSession, user_id: str, start: date_type, end: date_type
+) -> tuple[dict[date_type, float], dict[date_type, list[tuple[str, float]]]]:
+    """Daily carb totals (summed across meals) + per-day workout (type, strain)
+    over [start, end]. Pure read; feeds the glycogen DayPoint series."""
+    carb_rows = await session.execute(
+        select(Meal.meal_date, func.sum(Meal.carbs_g))
+        .where(
+            Meal.user_id == user_id,
+            Meal.carbs_g.is_not(None),
+            Meal.meal_date >= start,
+            Meal.meal_date <= end,
+        )
+        .group_by(Meal.meal_date)
+    )
+    carbs_by_date: dict[date_type, float] = {d: float(c) for d, c in carb_rows.all() if c is not None}
+
+    wk_rows = await session.execute(
+        select(Workout.workout_date, Workout.workout_type, Workout.strain).where(
+            Workout.user_id == user_id,
+            Workout.workout_date >= start,
+            Workout.workout_date <= end,
+        )
+    )
+    workouts_by_date: dict[date_type, list[tuple[str, float]]] = {}
+    for wdate, wtype, strain in wk_rows.all():
+        load = float(strain) if strain is not None else 1.0
+        workouts_by_date.setdefault(wdate, []).append((wtype or "", load))
+
+    return carbs_by_date, workouts_by_date
+
+
 async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14) -> WeightTrend:
     r = await session.execute(
         select(ManualLog.log_date, ManualLog.weight_lbs)
@@ -181,8 +220,47 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
     )
     avg_kcal = r2.scalar_one_or_none()
 
-    # Kalman filter the weight series for de-watered level + velocity
-    points = kalman_weight([(d, w) for d, w in rows])
+    # Phase 2: de-water with the glycogen regressor BEFORE the Kalman filter.
+    # Build a DayPoint series over the full window from carb + workout logs, then
+    # gate on carb-log coverage: if <50% of weight-days have a carb log, the
+    # regressor is uninformative -> skip it and use the Phase 1 raw-weight Kalman
+    # exactly (with a one-notch confidence downgrade).
+    start = as_of - timedelta(days=n_days)
+    carbs_by_date, workouts_by_date = await _fetch_carbs_and_workouts(session, user_id, start, as_of)
+
+    weight_by_date = dict(rows)
+    all_dates = sorted(set(weight_by_date) | set(carbs_by_date) | set(workouts_by_date))
+    day_points = [
+        DayPoint(
+            date=d,
+            weight_lbs=weight_by_date.get(d),
+            carbs_g=carbs_by_date.get(d),
+            workouts=workouts_by_date.get(d, []),
+        )
+        for d in all_dates
+    ]
+
+    total_weight_days = len(weight_by_date)
+    carb_logged_weight_days = sum(1 for d in weight_by_date if d in carbs_by_date)
+    use_regressor = total_weight_days > 0 and (carb_logged_weight_days / total_weight_days) >= 0.5
+
+    glycogen_offset_lbs: float | None = None
+    weight_dewatered_lbs: float | None = None
+
+    if use_regressor:
+        offsets = estimate_glycogen_water(day_points, get_glycogen_params(user_id))
+        # Feed the de-watered observation series to the Kalman filter.
+        dewatered_obs = [(o.date, o.weight_dewatered_lbs) for o in offsets]
+        points = kalman_weight(dewatered_obs)
+        # Surface the latest day that actually had a weight reading.
+        final_offset = next((o for o in reversed(offsets) if o.weight_dewatered_lbs is not None), None)
+        if final_offset is not None:
+            glycogen_offset_lbs = final_offset.water_deviation_lbs
+            weight_dewatered_lbs = final_offset.weight_dewatered_lbs
+    else:
+        # Phase 1 fallback: raw-weight Kalman, exactly as before.
+        points = kalman_weight([(d, w) for d, w in rows])
+
     final = points[-1] if points else None
     filtered_weight = final.level if final else None
     filtered_velocity = final.velocity if final else None
@@ -201,6 +279,10 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
     else:
         tdee_conf = "high"
 
+    # Sparse-carb fallback downgrades confidence one notch (regressor skipped).
+    if not use_regressor:
+        tdee_conf = _downgrade_confidence(tdee_conf)
+
     # Revealed TDEE from filtered velocity (NOT endpoint delta)
     revealed_tdee: int | None = None
     if avg_kcal is not None and filtered_velocity is not None:
@@ -214,6 +296,8 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
         filtered_weight_lbs=filtered_weight,
         filtered_velocity_lbs_per_day=filtered_velocity,
         revealed_tdee_confidence=tdee_conf,  # type: ignore[arg-type]
+        glycogen_water_offset_lbs=glycogen_offset_lbs,
+        weight_dewatered_lbs=weight_dewatered_lbs,
     )
 
 
