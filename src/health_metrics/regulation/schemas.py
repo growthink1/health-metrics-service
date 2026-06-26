@@ -120,9 +120,13 @@ class WeightTrend(BaseModel):
     """Weight trajectory + revealed TDEE estimate."""
 
     n_days: int
-    current_lbs: float | None = None
-    delta_lbs: float | None = None
-    revealed_tdee_kcal: int | None = None  # derived; null if insufficient data
+    current_lbs: float | None = None  # raw most-recent reading; preserved
+    delta_lbs: float | None = None  # raw endpoint delta; preserved for reference
+    revealed_tdee_kcal: int | None = None  # NOW from filtered slope, not endpoints
+    # New: Kalman-derived fields
+    filtered_weight_lbs: float | None = None
+    filtered_velocity_lbs_per_day: float | None = None
+    revealed_tdee_confidence: Literal["high", "medium", "low"] | None = None
 
 
 class Flag(BaseModel):

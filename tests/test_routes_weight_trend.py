@@ -67,10 +67,15 @@ async def test_weight_trend_returns_delta_and_revealed_tdee(db_session, monkeypa
     body = resp.json()
     assert body["n_days"] == 30
     assert body["current_lbs"] == pytest.approx(202.0, abs=0.01)
-    # delta = current(202) - first(200) = +2.0 lb
+    # delta = current(202) - first(200) = +2.0 lb -- raw delta preserved for reference
     assert body["delta_lbs"] == pytest.approx(2.0, abs=0.01)
-    # avg_kcal = 2500. revealed_tdee = 2500 - (2.0 * 3500 / 30) = 2500 - 233.3 = 2266
-    assert body["revealed_tdee_kcal"] == 2266
+    # revealed_tdee now derived from Kalman-filtered velocity, NOT endpoint delta.
+    # Avg kcal=2500, filtered velocity ≈ +0.09 lb/day across the 22-day span ->
+    # revealed_tdee = 2500 - 0.09*3500 ≈ 2178. Confidence is "low" (only 3 obs < 14).
+    assert body["revealed_tdee_kcal"] == pytest.approx(2178, abs=5)
+    assert body["revealed_tdee_confidence"] == "low"
+    assert body["filtered_weight_lbs"] == pytest.approx(201.95, abs=0.1)
+    assert body["filtered_velocity_lbs_per_day"] == pytest.approx(0.092, abs=0.02)
 
 
 @pytest.mark.asyncio
