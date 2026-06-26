@@ -7,6 +7,10 @@ from health_metrics.regulation.water_retention import (
     clears_by,
     training_water_series,
 )
+from health_metrics.regulation.water_retention_config import (
+    fallback_load,
+    get_water_params,
+)
 
 # ~2-day half-life, strain-14 session ≈ 0.7 lb (k=0.05)
 PARAMS = WaterRetentionParams(k=0.05, lam=0.3466)
@@ -64,3 +68,22 @@ def test_future_session_does_not_affect_earlier_days():
     assert series[1].water_lbs == 0.0
     # Day 2 (the session day) carries the full bolus
     assert abs(series[2].water_lbs - 0.70) < 0.01
+
+
+def test_get_water_params_hugo_and_default():
+    hugo = get_water_params("hugo")
+    assert hugo.lam > 0 and hugo.k > 0
+    # Unknown user falls back to defaults without raising
+    unknown = get_water_params("nobody")
+    assert unknown.k > 0 and unknown.lam > 0
+
+
+def test_fallback_load_uses_strain_when_present():
+    assert fallback_load("functional-fitness", 14.2) == 14.2
+
+
+def test_fallback_load_uses_type_constant_when_strain_missing():
+    assert fallback_load("functional-fitness", None) == 12.0
+    assert fallback_load("walking", None) == 5.0
+    assert fallback_load("unknown-type", None) == 8.0
+    assert fallback_load(None, None) == 8.0
