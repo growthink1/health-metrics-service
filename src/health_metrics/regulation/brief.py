@@ -23,6 +23,8 @@ from .schemas import (
     WeightTrend,
     WorkoutSummary,
 )
+from .water_retention import clears_by, training_water_series
+from .water_retention_config import get_water_params
 
 log = structlog.get_logger()
 
@@ -155,6 +157,27 @@ async def _subjective_logged_within_48h(session: AsyncSession, user_id: str, as_
     return (r.scalar_one() or 0) > 0
 
 
+async def _fetch_loads_by_day(
+    session: AsyncSession, user_id: str, start: date_type, end: date_type
+) -> dict[date_type, float]:
+    """Summed training load per day over [start, end]. Load = strain when present,
+    else a per-type fallback constant. Multiple workouts on a day are summed."""
+    from .water_retention_config import fallback_load
+
+    r = await session.execute(
+        select(Workout.workout_date, Workout.workout_type, Workout.strain).where(
+            Workout.user_id == user_id,
+            Workout.workout_date >= start,
+            Workout.workout_date <= end,
+        )
+    )
+    loads: dict[date_type, float] = {}
+    for wdate, wtype, strain in r.all():
+        load = fallback_load(wtype, float(strain) if strain is not None else None)
+        loads[wdate] = loads.get(wdate, 0.0) + load
+    return loads
+
+
 async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_type, n_days: int = 14) -> WeightTrend:
     r = await session.execute(
         select(ManualLog.log_date, ManualLog.weight_lbs)
@@ -181,27 +204,62 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
     )
     avg_kcal = r2.scalar_one_or_none()
 
-    # Kalman filter the weight series for de-watered level + velocity
-    points = kalman_weight([(d, w) for d, w in rows])
-    final = points[-1] if points else None
-    filtered_weight = final.level if final else None
-    filtered_velocity = final.velocity if final else None
-    velocity_sigma = math.sqrt(final.velocity_var) if final else None
+    # --- Phase 1 baseline: raw-weight Kalman ---
+    raw_obs = [(d, w) for d, w in rows]
+    raw_points = kalman_weight(raw_obs)
+    raw_final = raw_points[-1] if raw_points else None
+    raw_velocity = raw_final.velocity if raw_final else None
+    raw_velocity_var = raw_final.velocity_var if raw_final else None
+    raw_filtered_weight = raw_final.level if raw_final else None
+    raw_sigma = math.sqrt(raw_velocity_var) if raw_velocity_var is not None else None
 
-    # Confidence rule (from plan):
-    #   low:    n < 14 OR velocity_sigma > 0.15 lb/day
-    #   medium: 14-28 obs OR velocity_sigma 0.05-0.15
-    #   high:   >=28 obs AND velocity_sigma < 0.05
+    # --- Training-water retention: always compute the annotation ---
+    params = get_water_params(user_id)
+    window_start = as_of - timedelta(days=n_days)
+    loads_by_day = await _fetch_loads_by_day(session, user_id, window_start, as_of)
+    water_offset_lbs: float | None = None
+    water_clears: date_type | None = None
+    water_series = []
+    if loads_by_day:
+        all_dates = [d for d, _ in rows]
+        water_series = training_water_series(loads_by_day, all_dates, params)
+        # Offset on the most recent weigh-in day
+        water_offset_lbs = water_series[-1].offset_lbs if water_series else None
+        water_clears = clears_by(as_of, loads_by_day, params)
+
+    # --- Runtime gate: de-water ONLY if it cuts velocity-variance >=5% ---
+    use_dewatered = False
+    dw_velocity = raw_velocity
+    dw_velocity_var = raw_velocity_var
+    dw_filtered_weight = raw_filtered_weight
+    weight_dewatered_lbs: float | None = None
+    if loads_by_day and len(rows) >= 2:
+        # offset per weigh-in date, then subtract the deviation from observed weight
+        offset_by_date = {p.date: p.offset_lbs for p in water_series}
+        dw_obs = [(d, w - offset_by_date.get(d, 0.0)) for d, w in rows]
+        dw_points = kalman_weight(dw_obs)
+        dw_final = dw_points[-1] if dw_points else None
+        if dw_final is not None and raw_velocity_var is not None and dw_final.velocity_var <= raw_velocity_var * 0.95:
+            use_dewatered = True
+            dw_velocity = dw_final.velocity
+            dw_velocity_var = dw_final.velocity_var
+            dw_filtered_weight = dw_final.level
+            weight_dewatered_lbs = current - offset_by_date.get(rows[-1][0], 0.0)
+
+    # --- Confidence (unchanged from Phase 1; uses whichever sigma is in play) ---
+    sigma = math.sqrt(dw_velocity_var) if dw_velocity_var is not None else raw_sigma
     n_obs = len(rows)
     tdee_conf: str | None
-    if n_obs < 14 or (velocity_sigma is not None and velocity_sigma > 0.15):
+    if n_obs < 14 or (sigma is not None and sigma > 0.15):
         tdee_conf = "low"
-    elif n_obs < 28 or (velocity_sigma is not None and velocity_sigma > 0.05):
+    elif n_obs < 28 or (sigma is not None and sigma > 0.05):
         tdee_conf = "medium"
     else:
         tdee_conf = "high"
 
-    # Revealed TDEE from filtered velocity (NOT endpoint delta)
+    filtered_velocity = dw_velocity if use_dewatered else raw_velocity
+    filtered_weight = dw_filtered_weight if use_dewatered else raw_filtered_weight
+
     revealed_tdee: int | None = None
     if avg_kcal is not None and filtered_velocity is not None:
         revealed_tdee = int(float(avg_kcal) - (filtered_velocity * 3500.0))
@@ -209,11 +267,14 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
     return WeightTrend(
         n_days=n_days,
         current_lbs=current,  # raw, untouched
-        delta_lbs=delta,  # raw, preserved for reference
+        delta_lbs=delta,
         revealed_tdee_kcal=revealed_tdee,
         filtered_weight_lbs=filtered_weight,
         filtered_velocity_lbs_per_day=filtered_velocity,
         revealed_tdee_confidence=tdee_conf,  # type: ignore[arg-type]
+        training_water_offset_lbs=water_offset_lbs,
+        weight_dewatered_lbs=weight_dewatered_lbs,
+        training_water_clears_by=water_clears,
     )
 
 
