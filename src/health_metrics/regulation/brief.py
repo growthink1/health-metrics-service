@@ -3,6 +3,7 @@
 Composes: data fetchers -> DailySnapshot -> compute_regulation -> SessionBrief.
 """
 
+import math
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import DailyMetrics, HealthEvent, ManualLog, Workout
 from .engine import compute_regulation
+from .kalman import kalman_weight
 from .schemas import (
     DailySnapshot,
     Flag,
@@ -178,14 +180,40 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
         )
     )
     avg_kcal = r2.scalar_one_or_none()
+
+    # Kalman filter the weight series for de-watered level + velocity
+    points = kalman_weight([(d, w) for d, w in rows])
+    final = points[-1] if points else None
+    filtered_weight = final.level if final else None
+    filtered_velocity = final.velocity if final else None
+    velocity_sigma = math.sqrt(final.velocity_var) if final else None
+
+    # Confidence rule (from plan):
+    #   low:    n < 14 OR velocity_sigma > 0.15 lb/day
+    #   medium: 14-28 obs OR velocity_sigma 0.05-0.15
+    #   high:   >=28 obs AND velocity_sigma < 0.05
+    n_obs = len(rows)
+    tdee_conf: str | None
+    if n_obs < 14 or (velocity_sigma is not None and velocity_sigma > 0.15):
+        tdee_conf = "low"
+    elif n_obs < 28 or (velocity_sigma is not None and velocity_sigma > 0.05):
+        tdee_conf = "medium"
+    else:
+        tdee_conf = "high"
+
+    # Revealed TDEE from filtered velocity (NOT endpoint delta)
     revealed_tdee: int | None = None
-    if avg_kcal is not None and len(rows) > 1:
-        revealed_tdee = int(float(avg_kcal) - (delta * 3500.0 / n_days))
+    if avg_kcal is not None and filtered_velocity is not None:
+        revealed_tdee = int(float(avg_kcal) - (filtered_velocity * 3500.0))
+
     return WeightTrend(
         n_days=n_days,
-        current_lbs=current,
-        delta_lbs=delta,
+        current_lbs=current,  # raw, untouched
+        delta_lbs=delta,  # raw, preserved for reference
         revealed_tdee_kcal=revealed_tdee,
+        filtered_weight_lbs=filtered_weight,
+        filtered_velocity_lbs_per_day=filtered_velocity,
+        revealed_tdee_confidence=tdee_conf,  # type: ignore[arg-type]
     )
 
 
