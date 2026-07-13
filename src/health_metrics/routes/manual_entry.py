@@ -42,8 +42,8 @@ class ManualEntryPayload(BaseModel):
     carbs_g: int | None = None
     subjective_energy: int | None = Field(default=None, ge=1, le=10, alias="energy_1_10")
     subjective_mood: int | None = Field(default=None, ge=1, le=10, alias="mood_1_10")
-    subjective_hunger: int | None = Field(default=None, ge=1, le=10, alias="hunger_1_10")
-    soreness_1_10: int | None = Field(default=None, ge=1, le=10)
+    subjective_hunger: int | None = Field(default=None, ge=0, le=10, alias="hunger_1_10")  # 0 = no hunger (meaningful)
+    soreness_1_10: int | None = Field(default=None, ge=0, le=10)  # 0 = no soreness (meaningful)
     sleep_subjective_1_10: int | None = Field(default=None, ge=1, le=10)
     notes: str | None = None
 

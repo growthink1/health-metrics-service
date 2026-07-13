@@ -116,6 +116,92 @@ async def test_manual_entry_rejects_out_of_range_subjective(db_session, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_manual_entry_soreness_and_hunger_accept_zero(db_session, monkeypatch, test_user_id):
+    """0 is a meaningful reading for soreness + hunger; it must persist as 0, not null."""
+    monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
+    from health_metrics.routes import manual_entry as me_route
+
+    monkeypatch.setattr(me_route, "_session_factory", lambda: _ctx(db_session))
+    from health_metrics.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/manual-entry",
+            headers={"Authorization": "Bearer dash-tok"},
+            json={
+                "user_id": test_user_id,
+                "soreness_1_10": 0,
+                "hunger_1_10": 0,
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["soreness_1_10"] == 0  # persisted as 0, NOT null
+    assert body["subjective_hunger"] == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_entry_soreness_and_hunger_accept_ten(db_session, monkeypatch, test_user_id):
+    monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
+    from health_metrics.routes import manual_entry as me_route
+
+    monkeypatch.setattr(me_route, "_session_factory", lambda: _ctx(db_session))
+    from health_metrics.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/manual-entry",
+            headers={"Authorization": "Bearer dash-tok"},
+            json={"user_id": test_user_id, "soreness_1_10": 10, "hunger_1_10": 10},
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["soreness_1_10"] == 10
+    assert body["subjective_hunger"] == 10
+
+
+@pytest.mark.asyncio
+async def test_manual_entry_soreness_rejects_negative(db_session, monkeypatch, test_user_id):
+    monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
+    from health_metrics.routes import manual_entry as me_route
+
+    monkeypatch.setattr(me_route, "_session_factory", lambda: _ctx(db_session))
+    from health_metrics.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_neg = await client.post(
+            "/api/v1/manual-entry",
+            headers={"Authorization": "Bearer dash-tok"},
+            json={"user_id": test_user_id, "soreness_1_10": -1},
+        )
+        r_hi = await client.post(
+            "/api/v1/manual-entry",
+            headers={"Authorization": "Bearer dash-tok"},
+            json={"user_id": test_user_id, "hunger_1_10": 11},
+        )
+    assert r_neg.status_code == 422  # -1 still rejects
+    assert r_hi.status_code == 422  # 11 still rejects
+
+
+@pytest.mark.asyncio
+async def test_manual_entry_energy_still_rejects_zero(db_session, monkeypatch, test_user_id):
+    """energy/mood/sleep keep ge=1 — a 0 there is a data-entry error, not a reading."""
+    monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
+    from health_metrics.routes import manual_entry as me_route
+
+    monkeypatch.setattr(me_route, "_session_factory", lambda: _ctx(db_session))
+    from health_metrics.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/manual-entry",
+            headers={"Authorization": "Bearer dash-tok"},
+            json={"user_id": test_user_id, "energy_1_10": 0},
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_manual_entry_accepts_entry_date_alias(db_session, monkeypatch, test_user_id):
     """POST with entry_date instead of log_date works."""
     monkeypatch.setenv("HEALTH_API_TOKEN_DASHBOARD", "dash-tok")
