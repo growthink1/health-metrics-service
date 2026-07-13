@@ -39,6 +39,9 @@ jobs:
       - name: Install deps
         run: uv pip install --system -r requirements.txt -r requirements-dev.txt
 
+      - name: Install package (editable — so alembic env.py + pytest can import health_metrics)
+        run: uv pip install --system -e . --no-deps
+
       - name: Run alembic migrations
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
