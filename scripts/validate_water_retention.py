@@ -40,22 +40,25 @@ def _evaluate(params: WaterRetentionParams, weights, loads):
     ep_dates = [d for d in EPISODE if d in weights]
     raw = [weights[d] for d in ep_dates]
     water = training_water_series(loads, ep_dates, params)
-    offset = {p.date: p.offset_lbs for p in water}
+    absolute = {p.date: p.water_lbs for p in water}  # Σ decaying boluses (above fully-rested)
+    offset = {p.date: p.offset_lbs for p in water}  # deviation from window mean (legacy)
     dewatered = [weights[d] - offset[d] for d in ep_dates]
+    abs_water = [absolute[d] for d in ep_dates]
     raw_inc = _max_day_over_day_increase(raw)
     dw_inc = _max_day_over_day_increase(dewatered)
-    return ep_dates, raw, dewatered, raw_inc, dw_inc
+    return ep_dates, raw, dewatered, abs_water, raw_inc, dw_inc
 
 
 def main() -> None:
     weights, loads = _load()
     params = get_water_params("hugo")
-    ep_dates, raw, dewatered, raw_inc, dw_inc = _evaluate(params, weights, loads)
+    ep_dates, raw, dewatered, abs_water, raw_inc, dw_inc = _evaluate(params, weights, loads)
 
     print(f"Priors: k={params.k}, lam={params.lam}")
-    print(f"{'date':<12}{'raw':>8}{'dewatered':>12}")
-    for d, r, dw in zip(ep_dates, raw, dewatered, strict=True):
-        print(f"{d.isoformat():<12}{r:>8.1f}{dw:>12.2f}")
+    # abs_water = D1's annotation basis (absolute training water); offset/dewatered = legacy deviation view.
+    print(f"{'date':<12}{'raw':>8}{'abs_water':>12}{'dewatered':>12}")
+    for d, r, aw, dw in zip(ep_dates, raw, abs_water, dewatered, strict=True):
+        print(f"{d.isoformat():<12}{r:>8.1f}{aw:>12.2f}{dw:>12.2f}")
     print(f"\nRaw max day-over-day increase:       {raw_inc:.2f} lb")
     print(f"De-watered max day-over-day increase: {dw_inc:.2f} lb")
     passed = dw_inc < raw_inc
