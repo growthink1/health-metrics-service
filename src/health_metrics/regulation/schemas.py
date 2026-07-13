@@ -84,6 +84,17 @@ class DailySnapshot(BaseModel):
     subjective_logged_within_48h: bool = False
 
 
+class AppliedOverride(BaseModel):
+    """Records one manual override that modified the engine's RegulationCall
+    (spec §13). Surfaced so the dashboard/chat can explain 'you're seeing 2500
+    kcal instead of the engine's 2800 because <justification>'."""
+
+    field: str
+    from_value: str  # str() of the engine's original value
+    to_value: str  # str() of the override value
+    justification: str
+
+
 class RegulationCall(BaseModel):
     """Output of compute_regulation(). What the brief surfaces."""
 
@@ -93,6 +104,7 @@ class RegulationCall(BaseModel):
     overrides_today: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)
     signals_considered: list[str] = Field(default_factory=list)
+    applied_overrides: list[AppliedOverride] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"]
 
 
