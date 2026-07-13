@@ -20,6 +20,7 @@ _KCAL_TARGETS: dict[str, dict[RegulationState, int]] = {
         RegulationState.MAINTENANCE_ILLNESS: 2800,
         RegulationState.MAINTENANCE_PRE_PROCEDURE: 2800,
         RegulationState.MAINTENANCE_HRV_DEPRESSION: 2800,
+        RegulationState.MAINTENANCE_LOW_RECOVERY: 2800,
         RegulationState.DEFICIT_CONSERVATIVE: 2500,
         RegulationState.DEFICIT: 2300,
     },
@@ -28,6 +29,7 @@ _KCAL_TARGETS: dict[str, dict[RegulationState, int]] = {
         RegulationState.MAINTENANCE_ILLNESS: 2400,
         RegulationState.MAINTENANCE_PRE_PROCEDURE: 2400,
         RegulationState.MAINTENANCE_HRV_DEPRESSION: 2400,
+        RegulationState.MAINTENANCE_LOW_RECOVERY: 2400,
         RegulationState.DEFICIT_CONSERVATIVE: 2150,
         RegulationState.DEFICIT: 2000,
     },
@@ -145,6 +147,16 @@ def compute_regulation(snap: DailySnapshot) -> RegulationCall:
         rationale.append(
             f"HRV depression: z3 {snap.hrv_z_3d:.2f} for {snap.consecutive_days_below_baseline} consecutive days"
         )
+    # Priority 4.5a: severe low recovery
+    elif snap.recovery_today is not None and snap.recovery_today < 33:
+        state = RegulationState.MAINTENANCE_LOW_RECOVERY
+        tmod = TrainingModifier.VOLUME_MINUS_20
+        rationale.append(f"Low recovery: Whoop recovery {snap.recovery_today} (< 33)")
+    # Priority 4.5b: depressed recovery
+    elif snap.recovery_today is not None and snap.recovery_today < 40:
+        state = RegulationState.DEFICIT_CONSERVATIVE
+        tmod = TrainingModifier.FULL_NO_PROGRESSION
+        rationale.append(f"Depressed recovery: Whoop recovery {snap.recovery_today} (< 40)")
     # Priority 5: high strain + high recovery
     elif snap.strain_7d_mean > 12 and snap.recovery_today is not None and snap.recovery_today > 70:
         state = RegulationState.DEFICIT_CONSERVATIVE
@@ -195,6 +207,21 @@ def compute_regulation(snap: DailySnapshot) -> RegulationCall:
     if snap.hrv_z_3d is not None and snap.hrv_z_3d < -0.5 and snap.consecutive_days_below_baseline == 2:
         overrides.append("watchpoint_hrv")
 
+    # Honest rationale: never claim "all green" when overrides fired.
+    if overrides and "All signals green" in rationale:
+        rationale = [r for r in rationale if r != "All signals green"]
+        rationale.append("Watchpoints active: " + ", ".join(overrides))
+
+    # Decision B: auditable record of the key inputs the engine evaluated.
+    signals_considered = [
+        f"recovery_today={snap.recovery_today}",
+        f"hrv_z_3d={snap.hrv_z_3d}",
+        f"consecutive_days_below_baseline={snap.consecutive_days_below_baseline}",
+        f"strain_7d_mean={snap.strain_7d_mean}",
+        f"last_night_sleep_min={snap.last_night_sleep_min}",
+        f"history_days_count={snap.history_days_count}",
+    ]
+
     kcal = _KCAL_TARGETS.get(snap.user_id, _KCAL_TARGETS["hugo"])[state]
 
     return RegulationCall(
@@ -203,5 +230,6 @@ def compute_regulation(snap: DailySnapshot) -> RegulationCall:
         kcal_target=kcal,
         overrides_today=overrides,
         rationale=rationale,
+        signals_considered=signals_considered,
         confidence=_confidence(snap),
     )

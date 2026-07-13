@@ -5,12 +5,18 @@ override path + every confidence permutation is exercised.
 """
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from health_metrics.regulation.engine import compute_regulation
-from health_metrics.regulation.schemas import DailySnapshot, HealthEventSnapshot
+from health_metrics.regulation.schemas import (
+    DailySnapshot,
+    HealthEventSnapshot,
+    RegulationState,
+    TrainingModifier,
+)
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "days"
 
@@ -212,3 +218,81 @@ def test_pending_dental_override_added_when_state_is_sleep_deficit() -> None:
     assert "watch_jaw_load" in call.overrides_today
     # Also retains the sleep-deficit override
     assert "no_lift_today" in call.overrides_today
+
+
+def test_2026_07_09_false_green_repro() -> None:
+    """Headline repro: on 2026-07-09 recovery 39 with hrv_z -1.91 sailed through
+    to DEFICIT / FULL_PROGRESSION with rationale ["All signals green"] while the
+    watchpoint_hrv override fired. The low-recovery gate (P4.5b) must now catch
+    it and the rationale must never claim "all green"."""
+    snap = DailySnapshot(
+        user_id="hugo",
+        as_of_date=date(2026, 7, 9),
+        last_night_sleep_min=446,
+        sleep_3d_avg_min=450.0,
+        recovery_today=39,
+        hrv_z_3d=-1.91,
+        consecutive_days_below_baseline=2,
+        strain_7d_mean=10.0,
+        last_workout_max_hr_pct_age_predicted=None,
+        active_events=[],
+        history_days_count=47,
+        oura_present_today=True,
+        whoop_present_today=True,
+        subjective_logged_within_48h=False,
+    )
+    call = compute_regulation(snap)
+    assert call.training_modifier != TrainingModifier.FULL_PROGRESSION
+    assert call.state == RegulationState.DEFICIT_CONSERVATIVE  # recovery 39 -> P4.5b
+    assert "All signals green" not in call.rationale
+    # subjective absent -> one input missing -> confidence capped at medium
+    assert call.confidence == "medium"
+
+
+def test_severe_low_recovery_gates_to_maintenance_low_recovery() -> None:
+    """P4.5a: recovery < 33 with everything else benign routes to the new
+    MAINTENANCE_LOW_RECOVERY state at VOLUME_MINUS_20."""
+    snap = DailySnapshot(
+        user_id="hugo",
+        as_of_date=date(2026, 7, 10),
+        last_night_sleep_min=460,
+        sleep_3d_avg_min=455.0,
+        recovery_today=30,
+        hrv_z_3d=0.0,
+        consecutive_days_below_baseline=0,
+        strain_7d_mean=6.0,
+        last_workout_max_hr_pct_age_predicted=None,
+        active_events=[],
+        history_days_count=47,
+        oura_present_today=True,
+        whoop_present_today=True,
+        subjective_logged_within_48h=True,
+    )
+    call = compute_regulation(snap)
+    assert call.state == RegulationState.MAINTENANCE_LOW_RECOVERY
+    assert call.training_modifier == TrainingModifier.VOLUME_MINUS_20
+
+
+def test_green_day_is_deficit_with_auditable_signals() -> None:
+    """A genuinely green day stays DEFICIT / FULL_PROGRESSION and still emits an
+    auditable signals_considered block."""
+    snap = DailySnapshot(
+        user_id="hugo",
+        as_of_date=date(2026, 7, 11),
+        last_night_sleep_min=470,
+        sleep_3d_avg_min=460.0,
+        recovery_today=45,
+        hrv_z_3d=-0.2,
+        consecutive_days_below_baseline=0,
+        strain_7d_mean=5.0,
+        last_workout_max_hr_pct_age_predicted=None,
+        active_events=[],
+        history_days_count=47,
+        oura_present_today=True,
+        whoop_present_today=True,
+        subjective_logged_within_48h=True,
+    )
+    call = compute_regulation(snap)
+    assert call.state == RegulationState.DEFICIT
+    assert call.training_modifier == TrainingModifier.FULL_PROGRESSION
+    assert len(call.signals_considered) >= 4

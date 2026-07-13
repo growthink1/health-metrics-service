@@ -20,6 +20,7 @@ class RegulationState(StrEnum):
     MAINTENANCE_ILLNESS = "MAINTENANCE_ILLNESS"
     MAINTENANCE_PRE_PROCEDURE = "MAINTENANCE_PRE_PROCEDURE"
     MAINTENANCE_HRV_DEPRESSION = "MAINTENANCE_HRV_DEPRESSION"
+    MAINTENANCE_LOW_RECOVERY = "MAINTENANCE_LOW_RECOVERY"
     DEFICIT_CONSERVATIVE = "DEFICIT_CONSERVATIVE"
     DEFICIT = "DEFICIT"
 
@@ -91,6 +92,7 @@ class RegulationCall(BaseModel):
     kcal_target: int
     overrides_today: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)
+    signals_considered: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"]
 
 

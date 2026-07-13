@@ -48,6 +48,11 @@ _STATE_TO_LEGACY: dict[RegulationState, tuple[str, str, int]] = {
         "Volume -30%, swap HIIT for Z2",
         2800,
     ),
+    RegulationState.MAINTENANCE_LOW_RECOVERY: (
+        "maintenance",
+        "Low recovery: volume -20%",
+        2800,
+    ),
 }
 
 
