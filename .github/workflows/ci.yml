@@ -65,9 +65,13 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
         # 100% line + branch coverage on the engine.py decision tree.
-        # legacy.py is intentionally not on the gated module list -- it is slated
-        # for retirement in PR 5 of the session-brief sprint.
-        run: pytest tests/regulation/ --cov=health_metrics.regulation.engine --cov-branch --cov-report=term-missing --cov-fail-under=100
+        # Scoped to test_engine.py (the pure engine tests): the other files under
+        # tests/regulation/ (test_brief/test_cache/test_water_retention) use the
+        # db_session fixture, whose SQLAlchemy-asyncio greenlet + asyncpg connection
+        # segfaults under coverage's tracer. They don't exercise engine.py anyway
+        # (they cover brief.py/cache.py, verified by the full-suite step below).
+        # legacy.py is intentionally not on the gated module list -- retired in PR 5.
+        run: pytest tests/regulation/test_engine.py --cov=health_metrics.regulation.engine --cov-branch --cov-report=term-missing --cov-fail-under=100
 
       - name: pytest (full suite)
         env:
