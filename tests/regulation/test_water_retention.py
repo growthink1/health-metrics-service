@@ -97,44 +97,88 @@ def test_fallback_load_uses_type_constant_when_strain_missing():
 
 
 @pytest.mark.asyncio
-async def test_gate_keeps_dewater_when_it_helps(db_session, test_user_id):
-    """A clean linear cut buried under one big training-water spike → de-watering
-    reduces velocity variance → weight_dewatered_lbs is populated."""
+async def test_dewater_always_populated_when_workouts_present(db_session, test_user_id):
+    """D1: the de-watered annotation is ALWAYS populated when workouts are in the
+    window (no gate). It uses the kernel's ABSOLUTE water (Σ decaying boluses),
+    which on a training split reads ~0.5–2 lb — not the collapsed ~0.12 lb the old
+    deviation-from-window-mean produced. revealed_tdee stays on the raw filter."""
     base = date(2026, 6, 1)
     # 20 days of steady -0.1 lb/day decline
     for i in range(20):
-        w = 200.0 - 0.1 * i
-        # inject a +1.5 lb water spike on day 10 only
-        if i == 10:
-            w += 1.5
         db_session.add(
             ManualLog(
                 user_id=test_user_id,
                 log_date=base + timedelta(days=i),
-                weight_lbs=Decimal(str(round(w, 2))),
+                weight_lbs=Decimal(str(round(200.0 - 0.1 * i, 2))),
                 kcal_consumed=2500,
             )
         )
-    # a hard session on day 10 that explains the spike
+    # several functional-fitness sessions (strain ~14) spread across the window,
+    # including one on the most-recent day so today's absolute water is non-trivial
+    for day_offset in (2, 6, 10, 14, 17, 19):
+        db_session.add(
+            Workout(
+                user_id=test_user_id,
+                workout_date=base + timedelta(days=day_offset),
+                source="test",
+                source_id=f"{test_user_id}-w{day_offset}",
+                workout_type="functional-fitness",
+                started_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC) + timedelta(days=day_offset),
+                duration_min=60,
+                strain=Decimal("14.0"),
+            )
+        )
+    await db_session.flush()
+
+    wt = await compute_weight_trend(db_session, test_user_id, base + timedelta(days=19), n_days=20)
+    # Absolute training water — must be a real positive magnitude, not the collapsed ~0.12.
+    assert wt.training_water_offset_lbs is not None
+    assert wt.training_water_offset_lbs > 0.0
+    assert 0.5 <= wt.training_water_offset_lbs <= 2.0
+    # De-watered weight is ALWAYS set now (no gate), and water was subtracted.
+    assert wt.weight_dewatered_lbs is not None
+    assert wt.filtered_weight_lbs is not None
+    assert wt.weight_dewatered_lbs < wt.filtered_weight_lbs
+    # 7-day de-watered mean is populated.
+    assert wt.weight_dewatered_7d_avg is not None
+    # Raw filter still produces a TDEE (D2 deferred — TDEE stays on raw).
+    assert wt.revealed_tdee_kcal is not None
+
+
+@pytest.mark.asyncio
+async def test_dewater_offset_magnitude_plausible(db_session, test_user_id):
+    """A single hard functional-fitness session yesterday (strain 30) should leave
+    today's ABSOLUTE training water in a plausible physiological band (0.3–3.0 lb),
+    proving the value is no longer the deviation-collapsed ~0.12."""
+    base = date(2026, 6, 1)
+    for i in range(16):
+        db_session.add(
+            ManualLog(
+                user_id=test_user_id,
+                log_date=base + timedelta(days=i),
+                weight_lbs=Decimal(str(round(200.0 - 0.1 * i, 2))),
+                kcal_consumed=2500,
+            )
+        )
+    as_of = base + timedelta(days=15)
+    # hard session yesterday (day 14)
     db_session.add(
         Workout(
             user_id=test_user_id,
-            workout_date=base + timedelta(days=10),
+            workout_date=as_of - timedelta(days=1),
             source="test",
-            source_id=f"{test_user_id}-w10",
+            source_id=f"{test_user_id}-hard",
             workout_type="functional-fitness",
-            started_at=datetime(2026, 6, 11, 12, 0, tzinfo=UTC),
+            started_at=datetime(2026, 6, 15, 12, 0, tzinfo=UTC),
             duration_min=60,
             strain=Decimal("30.0"),
         )
     )
     await db_session.flush()
 
-    wt = await compute_weight_trend(db_session, test_user_id, base + timedelta(days=19), n_days=20)
-    assert wt.training_water_offset_lbs is not None  # annotation always set when workouts present
-    # The day-10 spike is mid-window so it perturbs the raw velocity; de-watering it should help.
-    # We assert the gate engaged OR (if not) that the field is cleanly None — never a crash.
-    assert (wt.weight_dewatered_lbs is not None) or (wt.weight_dewatered_lbs is None)
+    wt = await compute_weight_trend(db_session, test_user_id, as_of, n_days=16)
+    assert wt.training_water_offset_lbs is not None
+    assert 0.3 < wt.training_water_offset_lbs < 3.0
 
 
 @pytest.mark.asyncio
@@ -153,6 +197,7 @@ async def test_no_workouts_falls_back_clean(db_session, test_user_id):
     wt = await compute_weight_trend(db_session, test_user_id, base + timedelta(days=15), n_days=16)
     assert wt.training_water_offset_lbs is None
     assert wt.weight_dewatered_lbs is None
+    assert wt.weight_dewatered_7d_avg is None
     assert wt.training_water_clears_by is None
     assert wt.revealed_tdee_kcal is not None  # raw Kalman still produces a number
 

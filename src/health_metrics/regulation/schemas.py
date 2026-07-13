@@ -129,9 +129,10 @@ class WeightTrend(BaseModel):
     filtered_weight_lbs: float | None = None
     filtered_velocity_lbs_per_day: float | None = None
     revealed_tdee_confidence: Literal["high", "medium", "low"] | None = None
-    # Training-water retention model
-    training_water_offset_lbs: float | None = None  # today's retention deviation; +ve = above baseline
-    weight_dewatered_lbs: float | None = None  # raw − offset deviation; only when the gate passes
+    # Training-water retention model (absolute water above fully-rested)
+    training_water_offset_lbs: float | None = None  # today's ABSOLUTE training water (lb); ~1-2 lb after hard sessions
+    weight_dewatered_lbs: float | None = None  # filtered weight − today's abs water; always set when workouts present
+    weight_dewatered_7d_avg: float | None = None  # 7-day mean of the de-watered series; the decision variable
     training_water_clears_by: date_type | None = None  # date the kernel decays below 0.2 lb
 
 
