@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import DailyMetrics, HealthEvent, ManualLog, Workout
 from .engine import compute_regulation
 from .kalman import kalman_weight
+from .overrides import apply_overrides, fetch_active_overrides
 from .schemas import (
     DailySnapshot,
     Flag,
@@ -309,6 +310,12 @@ async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date
         subjective_logged_within_48h=subjective_48h,
     )
     call = compute_regulation(snap)
+
+    # Apply durable manual overrides on top of the engine's call (spec §13).
+    # Kept out of the pure engine — compute_regulation stays I/O-free (Invariant #2).
+    active_overrides = await fetch_active_overrides(session, user_id, as_of)
+    if active_overrides:
+        call = apply_overrides(call, active_overrides)
 
     missing: list[MissingInput] = []
     if not snap.oura_present_today:

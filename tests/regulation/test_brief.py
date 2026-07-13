@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from health_metrics.models import DailyMetrics, HealthEvent, Workout
+from health_metrics.models import DailyMetrics, HealthEvent, RegulationOverride, Workout
 from health_metrics.regulation.brief import compute_session_brief
 from health_metrics.regulation.schemas import RegulationState
 
@@ -124,3 +124,88 @@ async def test_compute_session_brief_recent_workouts_returned(db_session, test_u
     # Order desc by workout_date -- most recent first
     assert brief.recent_workouts[0].workout_date == as_of - timedelta(days=1)
     assert brief.recent_workouts[1].workout_date == as_of - timedelta(days=3)
+
+
+@pytest.mark.asyncio
+async def test_compute_session_brief_applies_active_kcal_override(db_session, test_user_id):
+    """End-to-end (real DB): an active kcal_target override is fetched + applied on
+    top of the engine's call, and recorded in applied_overrides (spec §13)."""
+    as_of = date(2026, 5, 28)
+    db_session.add(
+        DailyMetrics(
+            user_id=test_user_id,
+            metric_date=as_of,
+            whoop_recovery_score=85,
+            oura_sleep_duration_min=420,
+        )
+    )
+    for i in range(1, 15):
+        db_session.add(
+            DailyMetrics(
+                user_id=test_user_id,
+                metric_date=as_of - timedelta(days=i),
+                oura_sleep_duration_min=420,
+            )
+        )
+    db_session.add(
+        RegulationOverride(
+            user_id=test_user_id,
+            field="kcal_target",
+            value=2500,
+            justification="doctor cleared the infection",
+            valid_from=as_of - timedelta(days=1),
+            valid_until=as_of + timedelta(days=5),
+            created_by="hugo",
+        )
+    )
+    await db_session.flush()
+
+    brief = await compute_session_brief(db_session, test_user_id, as_of)
+    call = brief.regulation_call
+    assert call.kcal_target == 2500
+    assert len(call.applied_overrides) == 1
+    ao = call.applied_overrides[0]
+    assert ao.field == "kcal_target"
+    assert ao.to_value == "2500"
+    assert ao.justification == "doctor cleared the infection"
+
+
+@pytest.mark.asyncio
+async def test_compute_session_brief_ignores_revoked_override(db_session, test_user_id):
+    """A revoked override is not applied — kcal stays at the engine's value and
+    applied_overrides is empty."""
+    as_of = date(2026, 5, 28)
+    db_session.add(
+        DailyMetrics(
+            user_id=test_user_id,
+            metric_date=as_of,
+            whoop_recovery_score=85,
+            oura_sleep_duration_min=420,
+        )
+    )
+    for i in range(1, 15):
+        db_session.add(
+            DailyMetrics(
+                user_id=test_user_id,
+                metric_date=as_of - timedelta(days=i),
+                oura_sleep_duration_min=420,
+            )
+        )
+    db_session.add(
+        RegulationOverride(
+            user_id=test_user_id,
+            field="kcal_target",
+            value=2500,
+            justification="revoked one",
+            valid_from=as_of - timedelta(days=1),
+            valid_until=as_of + timedelta(days=5),
+            created_by="hugo",
+            revoked_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+            revoked_reason="mistake",
+        )
+    )
+    await db_session.flush()
+
+    brief = await compute_session_brief(db_session, test_user_id, as_of)
+    assert brief.regulation_call.applied_overrides == []
+    assert brief.regulation_call.kcal_target != 2500

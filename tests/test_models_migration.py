@@ -18,6 +18,7 @@ def test_all_expected_tables_registered():
         "goal_recommendations",
         "health_events",
         "regulation_cache",
+        "regulation_overrides",
     }
 
 
@@ -50,3 +51,10 @@ def test_regulation_cache_composite_pk():
     t = Base.metadata.tables["regulation_cache"]
     pk_cols = [c.name for c in t.primary_key.columns]
     assert pk_cols == ["user_id", "as_of_date"]
+
+
+def test_regulation_overrides_check_constraints():
+    t = Base.metadata.tables["regulation_overrides"]
+    checks = {c.name for c in t.constraints if c.__class__.__name__ == "CheckConstraint"}
+    assert "regulation_overrides_field_check" in checks
+    assert "regulation_overrides_created_by_check" in checks

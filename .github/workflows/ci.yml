@@ -39,16 +39,19 @@ jobs:
       - name: Install deps
         run: uv pip install --system -r requirements.txt -r requirements-dev.txt
 
+      - name: Install package (editable — so alembic env.py + pytest can import health_metrics)
+        run: uv pip install --system -e . --no-deps
+
       - name: Run alembic migrations
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
         run: alembic upgrade head
 
       - name: ruff check
-        run: ruff check src/health_metrics/regulation/ src/health_metrics/routes/auth.py src/health_metrics/routes/session_brief.py src/health_metrics/routes/manual_entry.py src/health_metrics/routes/meals_v1.py src/health_metrics/routes/health_events.py src/health_metrics/routes/workouts_history.py src/health_metrics/routes/weight_trend.py tests/regulation/ tests/test_routes_auth.py tests/test_routes_session_brief.py tests/test_routes_manual_entry.py tests/test_routes_meals_v1.py tests/test_routes_health_events.py tests/test_routes_workouts_history.py tests/test_routes_weight_trend.py scripts/
+        run: ruff check src/health_metrics/regulation/ src/health_metrics/routes/auth.py src/health_metrics/routes/session_brief.py src/health_metrics/routes/manual_entry.py src/health_metrics/routes/meals_v1.py src/health_metrics/routes/health_events.py src/health_metrics/routes/regulation_overrides.py src/health_metrics/routes/workouts_history.py src/health_metrics/routes/weight_trend.py tests/regulation/ tests/test_routes_auth.py tests/test_routes_session_brief.py tests/test_routes_manual_entry.py tests/test_routes_meals_v1.py tests/test_routes_health_events.py tests/test_routes_regulation_overrides.py tests/test_routes_workouts_history.py tests/test_routes_weight_trend.py scripts/
 
       - name: ruff format check
-        run: ruff format --check src/health_metrics/regulation/ src/health_metrics/routes/auth.py src/health_metrics/routes/session_brief.py src/health_metrics/routes/manual_entry.py src/health_metrics/routes/meals_v1.py src/health_metrics/routes/health_events.py src/health_metrics/routes/workouts_history.py src/health_metrics/routes/weight_trend.py tests/regulation/ tests/test_routes_auth.py tests/test_routes_session_brief.py tests/test_routes_manual_entry.py tests/test_routes_meals_v1.py tests/test_routes_health_events.py tests/test_routes_workouts_history.py tests/test_routes_weight_trend.py scripts/
+        run: ruff format --check src/health_metrics/regulation/ src/health_metrics/routes/auth.py src/health_metrics/routes/session_brief.py src/health_metrics/routes/manual_entry.py src/health_metrics/routes/meals_v1.py src/health_metrics/routes/health_events.py src/health_metrics/routes/regulation_overrides.py src/health_metrics/routes/workouts_history.py src/health_metrics/routes/weight_trend.py tests/regulation/ tests/test_routes_auth.py tests/test_routes_session_brief.py tests/test_routes_manual_entry.py tests/test_routes_meals_v1.py tests/test_routes_health_events.py tests/test_routes_regulation_overrides.py tests/test_routes_workouts_history.py tests/test_routes_weight_trend.py scripts/
 
       - name: mypy (strict on new regulation engine + schemas + auth)
         # legacy.py is slated for retirement in PR 5 of the session-brief sprint;
@@ -62,9 +65,13 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5433/health_metrics_test
         # 100% line + branch coverage on the engine.py decision tree.
-        # legacy.py is intentionally not on the gated module list -- it is slated
-        # for retirement in PR 5 of the session-brief sprint.
-        run: pytest tests/regulation/ --cov=health_metrics.regulation.engine --cov-branch --cov-report=term-missing --cov-fail-under=100
+        # Scoped to test_engine.py (the pure engine tests): the other files under
+        # tests/regulation/ (test_brief/test_cache/test_water_retention) use the
+        # db_session fixture, whose SQLAlchemy-asyncio greenlet + asyncpg connection
+        # segfaults under coverage's tracer. They don't exercise engine.py anyway
+        # (they cover brief.py/cache.py, verified by the full-suite step below).
+        # legacy.py is intentionally not on the gated module list -- retired in PR 5.
+        run: pytest tests/regulation/test_engine.py --cov=health_metrics.regulation.engine --cov-branch --cov-report=term-missing --cov-fail-under=100
 
       - name: pytest (full suite)
         env:

@@ -8,13 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .jobs.scheduler import build_scheduler
-from .routes import health as health_route, ingest as ingest_route, api as api_route
+from .routes import api as api_route
+from .routes import health as health_route
+from .routes import ingest as ingest_route
 from .routes.chat import router as chat_router
 from .routes.goals import router as goals_router
 from .routes.health_events import router as health_events_router
 from .routes.manual_entry import router as manual_entry_router
 from .routes.meals import router as meals_router
 from .routes.meals_v1 import router as meals_v1_router
+from .routes.regulation_overrides import router as regulation_overrides_router
 from .routes.session_brief import router as session_brief_router
 from .routes.weight_trend import router as weight_trend_router
 from .routes.workout_sets import router as workout_sets_router
@@ -30,9 +33,7 @@ def configure_logging(log_level: str) -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.dev.ConsoleRenderer()
-            if sys.stderr.isatty()
-            else structlog.processors.JSONRenderer(),
+            structlog.dev.ConsoleRenderer() if sys.stderr.isatty() else structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(0),
         context_class=dict,
@@ -65,6 +66,7 @@ app.include_router(session_brief_router)
 app.include_router(manual_entry_router)
 app.include_router(meals_v1_router)
 app.include_router(health_events_router)
+app.include_router(regulation_overrides_router)
 app.include_router(workouts_history_router)
 app.include_router(weight_trend_router)
 

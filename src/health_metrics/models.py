@@ -1,7 +1,9 @@
 """SQLAlchemy ORM models — mirrors docs/spec.md §3 schema."""
 
 import uuid
-from datetime import date as date_type, datetime, time as time_type
+from datetime import date as date_type
+from datetime import datetime
+from datetime import time as time_type
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -21,7 +23,8 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -67,9 +70,7 @@ class DailyMetrics(Base):
     unified_rhr_z: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     unified_sleep_z: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
 
-    ingestion_complete: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("false"), default=False
-    )
+    ingestion_complete: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
     oura_status: Mapped[Optional[str]] = mapped_column(Text)
     whoop_status: Mapped[Optional[str]] = mapped_column(Text)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
@@ -131,9 +132,7 @@ class ManualLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "log_date", name="uq_manual_log_user_date"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "log_date", name="uq_manual_log_user_date"),)
 
 
 class RegulationRecommendation(Base):
@@ -150,9 +149,7 @@ class RegulationRecommendation(Base):
     triggering_signals: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
-    __table_args__ = (
-        Index("idx_reg_rec_user_date", "user_id", "rec_date"),
-    )
+    __table_args__ = (Index("idx_reg_rec_user_date", "user_id", "rec_date"),)
 
 
 class OAuthState(Base):
@@ -168,9 +165,7 @@ class OAuthState(Base):
     access_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
-    __table_args__ = (
-        UniqueConstraint("provider", "user_id", name="uq_oauth_state_provider_user"),
-    )
+    __table_args__ = (UniqueConstraint("provider", "user_id", name="uq_oauth_state_provider_user"),)
 
 
 class NarrationCache(Base):
@@ -189,13 +184,13 @@ class NarrationCache(Base):
     signals_hash: Mapped[str] = mapped_column(Text, nullable=False)
     narration_text: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()")
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
     __table_args__ = (
         UniqueConstraint(
-            "user_id", "metric_date", "signals_hash",
+            "user_id",
+            "metric_date",
+            "signals_hash",
             name="uq_narration_cache_user_date_hash",
         ),
     )
@@ -218,9 +213,7 @@ class Meal(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'chat'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
-    __table_args__ = (
-        Index("idx_meals_user_date", "user_id", "meal_date"),
-    )
+    __table_args__ = (Index("idx_meals_user_date", "user_id", "meal_date"),)
 
 
 class WorkoutSet(Base):
@@ -237,9 +230,7 @@ class WorkoutSet(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
 
-    __table_args__ = (
-        Index("idx_workout_sets_workout", "workout_id"),
-    )
+    __table_args__ = (Index("idx_workout_sets_workout", "workout_id"),)
 
 
 class Goal(Base):
@@ -323,12 +314,8 @@ class HealthEvent(Base):
         server_default=text("'{}'::text[]"),
     )
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
     __table_args__ = (
         CheckConstraint(
@@ -360,16 +347,54 @@ class RegulationCache(Base):
     user_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
     as_of_date: Mapped[date_type] = mapped_column(Date, primary_key=True, nullable=False)
     brief_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    cached_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
+    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    latest_ingestion_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latest_write_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("regulation_cache_cached_at_idx", "cached_at"),)
+
+
+class RegulationOverride(Base):
+    """Durable manual override of the engine's RegulationCall (spec §13).
+
+    Fetched + applied in the BRIEF layer (compute_session_brief), never in the
+    pure engine (compute_regulation stays I/O-free, Invariant #2). Active =
+    revoked_at IS NULL AND valid_from <= as_of <= valid_until. When multiple
+    overrides target the same field the most-recently-created wins.
+    """
+
+    __tablename__ = "regulation_overrides"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
     )
-    latest_ingestion_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    latest_write_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    field: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    valid_from: Mapped[date_type] = mapped_column(Date, nullable=False)
+    valid_until: Mapped[date_type] = mapped_column(Date, nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revoked_reason: Mapped[Optional[str]] = mapped_column(Text)
 
     __table_args__ = (
-        Index("regulation_cache_cached_at_idx", "cached_at"),
+        CheckConstraint(
+            "field IN ('kcal_target','training_modifier','state','add_override','remove_override')",
+            name="regulation_overrides_field_check",
+        ),
+        CheckConstraint(
+            "created_by IN ('hugo','andrea','claude_chat','claude_code')",
+            name="regulation_overrides_created_by_check",
+        ),
+        Index(
+            "idx_reg_overrides_user_active",
+            "user_id",
+            "valid_from",
+            "valid_until",
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
     )
