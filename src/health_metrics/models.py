@@ -398,3 +398,56 @@ class RegulationOverride(Base):
             postgresql_where=text("revoked_at IS NULL"),
         ),
     )
+
+
+class ActivityLog(Base):
+    __tablename__ = "activity_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    activity_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    activity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    distance_mi: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2))
+    duration_min: Mapped[Optional[int]] = mapped_column(Integer)
+    elevation_ft: Mapped[Optional[int]] = mapped_column(Integer)
+    avg_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    max_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    strain: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 2))
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+
+    __table_args__ = (
+        CheckConstraint(
+            "activity_type IN ('walk','run','ride','z2','hiit','strength','climb','other')",
+            name="activity_log_type_check",
+        ),
+        CheckConstraint(
+            "source IN ('strava','whoop','peloton','manual','api')",
+            name="activity_log_source_check",
+        ),
+        Index("idx_activity_log_user_date", "user_id", "activity_date"),
+    )
+
+
+class BodyComposition(Base):
+    __tablename__ = "body_composition"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    measured_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    weight_lbs: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    body_fat_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 1))
+    lean_mass_lbs: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    fat_mass_lbs: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('dexa','bioimpedance','hydrostatic','manual')",
+            name="body_composition_source_check",
+        ),
+        Index("idx_body_comp_user_date", "user_id", "measured_date"),
+    )

@@ -19,6 +19,8 @@ def test_all_expected_tables_registered():
         "health_events",
         "regulation_cache",
         "regulation_overrides",
+        "activity_log",
+        "body_composition",
     }
 
 
@@ -58,3 +60,16 @@ def test_regulation_overrides_check_constraints():
     checks = {c.name for c in t.constraints if c.__class__.__name__ == "CheckConstraint"}
     assert "regulation_overrides_field_check" in checks
     assert "regulation_overrides_created_by_check" in checks
+
+
+def test_activity_log_check_constraints():
+    t = Base.metadata.tables["activity_log"]
+    checks = {c.name for c in t.constraints if c.__class__.__name__ == "CheckConstraint"}
+    assert "activity_log_type_check" in checks
+    assert "activity_log_source_check" in checks
+
+
+def test_body_composition_check_constraint():
+    t = Base.metadata.tables["body_composition"]
+    checks = {c.name for c in t.constraints if c.__class__.__name__ == "CheckConstraint"}
+    assert "body_composition_source_check" in checks
