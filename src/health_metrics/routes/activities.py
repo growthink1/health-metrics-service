@@ -62,7 +62,9 @@ async def post_activity(
     payload: ActivityPayload,
     principal: Principal = Depends(get_principal),  # noqa: B008
 ) -> ActivityResponse:
-    log.info("activity_write", user_id=payload.user_id, activity_date=payload.activity_date.isoformat(), principal=principal)
+    log.info(
+        "activity_write", user_id=payload.user_id, activity_date=payload.activity_date.isoformat(), principal=principal
+    )
     async with _session_factory() as session:
         row = ActivityLog(
             user_id=payload.user_id,
