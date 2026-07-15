@@ -9,9 +9,7 @@ from health_metrics.regulation.brief import compute_energy_today
 @pytest.mark.asyncio
 async def test_energy_today_uses_dexa_rmr_and_activity(db_session, test_user_id):
     db_session.add(
-        BodyComposition(
-            user_id=test_user_id, measured_date=date(2026, 7, 1), source="dexa", lean_mass_lbs=170.0
-        )
+        BodyComposition(user_id=test_user_id, measured_date=date(2026, 7, 1), source="dexa", lean_mass_lbs=170.0)
     )
     db_session.add(
         ActivityLog(
@@ -23,9 +21,7 @@ async def test_energy_today_uses_dexa_rmr_and_activity(db_session, test_user_id)
             source="strava",
         )
     )
-    db_session.add(
-        DailyMetrics(user_id=test_user_id, metric_date=date(2026, 7, 13), whoop_kcal_burned=2650)
-    )
+    db_session.add(DailyMetrics(user_id=test_user_id, metric_date=date(2026, 7, 13), whoop_kcal_burned=2650))
     await db_session.flush()
 
     e = await compute_energy_today(
@@ -43,9 +39,7 @@ async def test_energy_today_uses_dexa_rmr_and_activity(db_session, test_user_id)
 
 @pytest.mark.asyncio
 async def test_energy_today_partial_today_excludes_measured(db_session, test_user_id):
-    db_session.add(
-        DailyMetrics(user_id=test_user_id, metric_date=date(2026, 7, 13), whoop_kcal_burned=807)
-    )
+    db_session.add(DailyMetrics(user_id=test_user_id, metric_date=date(2026, 7, 13), whoop_kcal_burned=807))
     await db_session.flush()
     e = await compute_energy_today(
         db_session, test_user_id, date(2026, 7, 13), weight_lbs=220.0, today=date(2026, 7, 13)

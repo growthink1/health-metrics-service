@@ -42,6 +42,7 @@ def test_neat_prefers_measured_kcal():
 def test_neat_duration_fallback_when_no_distance_or_kcal():
     a = Activity("strength", "manual", None, 45, None)
     from health_metrics.regulation.energy_config import PER_TYPE_KCAL_PER_MIN
+
     assert neat_kcal([a], 220.0, P) == 45 * PER_TYPE_KCAL_PER_MIN["strength"]
 
 
