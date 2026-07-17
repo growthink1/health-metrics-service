@@ -364,6 +364,9 @@ async def compute_energy_today(
 
 
 async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date_type) -> SessionBrief:
+    # NOTE: If you change what this function computes (or the SessionBrief
+    # schema), bump BRIEF_SCHEMA_VERSION in regulation/cache.py so cached briefs
+    # from the old logic auto-invalidate on the next read after deploy.
     r = await session.execute(
         select(DailyMetrics).where(
             DailyMetrics.user_id == user_id,

@@ -142,6 +142,31 @@ async def test_cache_invalidated_when_new_ingestion(db_session, test_user_id):
 
 
 @pytest.mark.asyncio
+async def test_cache_invalidated_when_brief_schema_version_bumps(db_session, test_user_id, monkeypatch):
+    """A deploy that bumps BRIEF_SCHEMA_VERSION forces a recompute even when
+    ingestion/write timestamps are unchanged.
+
+    Regression: the §13 + Item-4 deploy (2026-07-13) shipped new brief logic but
+    the cache kept serving stale brief_json (old weight_dewatered_lbs=null,
+    offset -0.31) until the rows were deleted by hand. A version bump must
+    auto-miss the cache.
+    """
+    as_of = date(2026, 5, 26)
+    brief = _minimal_brief(test_user_id, as_of)
+    await write_cache(db_session, test_user_id, as_of, brief)
+    await db_session.flush()
+
+    # Positive control: same version -> cache is still fresh.
+    assert await read_cache(db_session, test_user_id, as_of) is not None
+
+    # Simulate a deploy that changes brief logic/schema -> version constant bumps.
+    monkeypatch.setattr("health_metrics.regulation.cache.BRIEF_SCHEMA_VERSION", "deploy-bumped-999")
+
+    # The stamped version no longer matches the running code -> recompute.
+    assert await read_cache(db_session, test_user_id, as_of) is None
+
+
+@pytest.mark.asyncio
 async def test_write_cache_upsert_overwrites_existing(db_session, test_user_id):
     """Second write to the same (user_id, as_of_date) updates rather than dupes."""
     b1 = _minimal_brief(test_user_id, date(2026, 5, 26))

@@ -26,6 +26,18 @@ from .schemas import SessionBrief
 
 log = structlog.get_logger()
 
+# Version of the brief schema + computation logic. BUMP THIS whenever
+# compute_session_brief (brief.py) or the SessionBrief schema changes in a way
+# that alters brief_json for the same inputs. read_cache treats any row whose
+# stamped version differs from this constant as stale, so a version bump makes
+# the next read recompute automatically -- no manual cache purge on deploy.
+#
+# History:
+#   0 -> pre-versioning rows (server_default; always stale vs. any real version)
+#   1 -> §13 regulation_overrides + Item-4 absolute training-water de-watering
+#        (weight_dewatered_lbs always populated). First versioned release.
+BRIEF_SCHEMA_VERSION = "1"
+
 
 async def get_latest_ingestion_at(session: AsyncSession, user_id: str) -> datetime | None:
     """MAX(ingested_at) on daily_metrics for the user. None if no rows exist."""
@@ -75,6 +87,19 @@ async def read_cache(session: AsyncSession, user_id: str, as_of: date_type) -> S
     if row is None:
         return None
 
+    # Version mismatch = new brief logic/schema deployed -> stale regardless of
+    # timestamps. Checked first so it's cheap and its own log reason.
+    if row.brief_schema_version != BRIEF_SCHEMA_VERSION:
+        log.info(
+            "regulation_cache_stale",
+            user_id=user_id,
+            as_of=as_of.isoformat(),
+            reason="schema_version",
+            cached_version=row.brief_schema_version,
+            current_version=BRIEF_SCHEMA_VERSION,
+        )
+        return None
+
     latest_ing = await get_latest_ingestion_at(session, user_id)
     latest_wr = await get_latest_write_at(session, user_id, as_of)
 
@@ -84,6 +109,7 @@ async def read_cache(session: AsyncSession, user_id: str, as_of: date_type) -> S
             "regulation_cache_stale",
             user_id=user_id,
             as_of=as_of.isoformat(),
+            reason="timestamps",
         )
         return None
 
@@ -109,6 +135,7 @@ async def write_cache(
             brief_json=brief_payload,
             latest_ingestion_at=latest_ing,
             latest_write_at=latest_wr,
+            brief_schema_version=BRIEF_SCHEMA_VERSION,
         )
         .on_conflict_do_update(
             index_elements=["user_id", "as_of_date"],
@@ -116,6 +143,7 @@ async def write_cache(
                 "brief_json": brief_payload,
                 "latest_ingestion_at": latest_ing,
                 "latest_write_at": latest_wr,
+                "brief_schema_version": BRIEF_SCHEMA_VERSION,
                 "cached_at": func.now(),
             },
         )
