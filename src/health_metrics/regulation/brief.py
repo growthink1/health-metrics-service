@@ -11,12 +11,16 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import DailyMetrics, HealthEvent, ManualLog, Workout
+from ..models import ActivityLog, BodyComposition, DailyMetrics, HealthEvent, ManualLog, Workout
+from .body_composition import katch_mcardle_rmr
+from .energy import Activity, compute_energy
+from .energy_config import get_energy_params, normalize_activity_type
 from .engine import compute_regulation
 from .kalman import kalman_weight
 from .overrides import apply_overrides, fetch_active_overrides
 from .schemas import (
     DailySnapshot,
+    EnergyToday,
     Flag,
     HealthEventSnapshot,
     MissingInput,
@@ -271,6 +275,94 @@ async def compute_weight_trend(session: AsyncSession, user_id: str, as_of: date_
     )
 
 
+async def _fetch_day_activities(session: AsyncSession, user_id: str, as_of: date_type) -> list[Activity]:
+    """Union of auto workouts + manual activity_log for the day, normalized."""
+    acts: list[Activity] = []
+
+    wr = await session.execute(
+        select(Workout.workout_type, Workout.duration_min, Workout.kcal).where(
+            Workout.user_id == user_id,
+            Workout.workout_date == as_of,
+        )
+    )
+    for wtype, dur, kcal in wr.all():
+        acts.append(
+            Activity(
+                activity_type=normalize_activity_type(wtype),
+                source_layer="auto",
+                distance_mi=None,
+                duration_min=dur,
+                kcal=float(kcal) if kcal is not None else None,
+            )
+        )
+
+    ar = await session.execute(
+        select(ActivityLog.activity_type, ActivityLog.distance_mi, ActivityLog.duration_min).where(
+            ActivityLog.user_id == user_id,
+            ActivityLog.activity_date == as_of,
+        )
+    )
+    for atype, dist, dur in ar.all():
+        acts.append(
+            Activity(
+                activity_type=normalize_activity_type(atype),
+                source_layer="manual",
+                distance_mi=float(dist) if dist is not None else None,
+                duration_min=dur,
+                kcal=None,
+            )
+        )
+    return acts
+
+
+async def compute_energy_today(
+    session: AsyncSession,
+    user_id: str,
+    as_of: date_type,
+    weight_lbs: float | None,
+    today: date_type,
+) -> EnergyToday | None:
+    params = get_energy_params(user_id)
+
+    # RMR from the latest body_composition row with lean mass; else fallback.
+    br = await session.execute(
+        select(BodyComposition.lean_mass_lbs)
+        .where(
+            BodyComposition.user_id == user_id,
+            BodyComposition.lean_mass_lbs.is_not(None),
+            BodyComposition.measured_date <= as_of,
+        )
+        .order_by(BodyComposition.measured_date.desc())
+        .limit(1)
+    )
+    lean = br.scalar_one_or_none()
+    if lean is not None:
+        rmr_kcal, rmr_source = katch_mcardle_rmr(float(lean)), "dexa"
+    else:
+        rmr_kcal, rmr_source = params.fallback_rmr_kcal, "fallback"
+
+    activities = await _fetch_day_activities(session, user_id, as_of)
+
+    dr = await session.execute(
+        select(DailyMetrics.whoop_kcal_burned).where(
+            DailyMetrics.user_id == user_id,
+            DailyMetrics.metric_date == as_of,
+        )
+    )
+    whoop_kcal = dr.scalar_one_or_none()
+    whoop_complete = as_of < today  # today's whoop total is partial
+
+    return compute_energy(
+        rmr_kcal=rmr_kcal,
+        rmr_source=rmr_source,
+        weight_lbs=weight_lbs,
+        activities=activities,
+        whoop_kcal_burned=whoop_kcal,
+        whoop_complete=whoop_complete,
+        params=params,
+    )
+
+
 async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date_type) -> SessionBrief:
     # NOTE: If you change what this function computes (or the SessionBrief
     # schema), bump BRIEF_SCHEMA_VERSION in regulation/cache.py so cached briefs
@@ -295,6 +387,17 @@ async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date
     history_days_count = await _history_days_count(session, user_id)
     subjective_48h = await _subjective_logged_within_48h(session, user_id, as_of)
     weight_trend = await compute_weight_trend(session, user_id, as_of)
+
+    _wt_weight = None
+    if weight_trend is not None:
+        _wt_weight = weight_trend.filtered_weight_lbs or weight_trend.current_lbs
+    try:
+        energy_today = await compute_energy_today(
+            session, user_id, as_of, weight_lbs=_wt_weight, today=date_type.today()
+        )
+    except Exception:  # energy is additive — never let it break the brief
+        log.warning("energy_today_failed", user_id=user_id, exc_info=True)
+        energy_today = None
 
     snap = DailySnapshot(
         user_id=user_id,
@@ -379,6 +482,7 @@ async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date
         daily_snapshot=snap,
         recent_workouts=workouts,
         weight_trend=weight_trend,
+        energy_today=energy_today,
         active_events=active_events,
         flags=flags,
         missing_inputs=missing,

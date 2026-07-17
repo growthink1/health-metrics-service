@@ -36,7 +36,8 @@ log = structlog.get_logger()
 #   0 -> pre-versioning rows (server_default; always stale vs. any real version)
 #   1 -> §13 regulation_overrides + Item-4 absolute training-water de-watering
 #        (weight_dewatered_lbs always populated). First versioned release.
-BRIEF_SCHEMA_VERSION = "1"
+#   2 -> Item-6: SessionBrief.energy_today (NEAT/TDEE energy model).
+BRIEF_SCHEMA_VERSION = "2"
 
 
 async def get_latest_ingestion_at(session: AsyncSession, user_id: str) -> datetime | None:

@@ -164,6 +164,20 @@ class MissingInput(BaseModel):
     message: str | None = None
 
 
+class EnergyToday(BaseModel):
+    """Same-day energy readout: measured (Whoop) + modeled (RMR+NEAT) blend."""
+
+    neat_kcal: float | None = None
+    baseline_kcal: int | None = None  # rmr_kcal * baseline_activity_factor
+    rmr_kcal: int | None = None
+    tdee_measured_kcal: int | None = None  # whoop_kcal_burned, complete days only
+    tdee_modeled_kcal: int | None = None  # baseline + neat
+    tdee_estimate_kcal: int | None = None  # headline = modeled
+    divergence_flag: bool = False  # measured vs modeled disagree > divergence_pct
+    activities_counted: list[str] = Field(default_factory=list)
+    rmr_source: Literal["dexa", "fallback"] = "fallback"
+
+
 class SessionBrief(BaseModel):
     """Top-level brief returned by /api/v1/session-brief."""
 
@@ -173,6 +187,7 @@ class SessionBrief(BaseModel):
     daily_snapshot: DailySnapshot
     recent_workouts: list[WorkoutSummary] = Field(default_factory=list)
     weight_trend: WeightTrend | None = None
+    energy_today: EnergyToday | None = None
     active_events: list[HealthEventSnapshot] = Field(default_factory=list)
     flags: list[Flag] = Field(default_factory=list)
     missing_inputs: list[MissingInput] = Field(default_factory=list)
