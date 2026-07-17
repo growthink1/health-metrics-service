@@ -1,7 +1,7 @@
 """activity_log and body_composition tables
 
 Revision ID: d7f3b4968ef9
-Revises: 9abd8e07b339
+Revises: e2e7f619807b
 Create Date: 2026-07-15 11:32:50.080506
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'd7f3b4968ef9'
-down_revision: Union[str, Sequence[str], None] = '9abd8e07b339'
+down_revision: Union[str, Sequence[str], None] = 'e2e7f619807b'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
