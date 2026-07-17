@@ -30,6 +30,10 @@ def dedup_activities(activities: list[Activity]) -> list[Activity]:
 
 def activity_neat_kcal(a: Activity, weight_lbs: float | None, params: EnergyParams) -> float:
     if a.kcal is not None:
+        # Whoop's workouts.kcal is GROSS (in-session resting included); the distance path
+        # below is net-of-resting, so measured-activity days carry a small systematic
+        # in-workout-resting double-count atop RMR*baseline that calibrate_energy.py's
+        # baseline_activity_factor/neat_coef tuning can't fully absorb — flag for calibration.
         return a.kcal
     if a.distance_mi is not None and weight_lbs is not None and a.activity_type in ("walk", "run"):
         return a.distance_mi * weight_lbs * params.neat_coef

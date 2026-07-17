@@ -3,7 +3,9 @@ from datetime import UTC, date, datetime
 import pytest
 
 from health_metrics.models import ActivityLog, BodyComposition, DailyMetrics, Workout
-from health_metrics.regulation.brief import compute_energy_today
+from health_metrics.regulation import brief as brief_module
+from health_metrics.regulation.brief import compute_energy_today, compute_session_brief
+from health_metrics.regulation.schemas import EnergyToday, SessionBrief
 
 
 @pytest.mark.asyncio
@@ -79,3 +81,47 @@ async def test_energy_today_dedups_whoop_and_manual_walk(db_session, test_user_i
     # Only ONE walk counted (manual wins) — not 90 + 315
     assert len(e.activities_counted) == 1
     assert "activity_log" in e.activities_counted[0]
+
+
+@pytest.mark.asyncio
+async def test_compute_session_brief_populates_energy_today(db_session, test_user_id):
+    """M2 — compute_session_brief wires compute_energy_today into SessionBrief.energy_today."""
+    as_of = date(2026, 7, 13)
+    db_session.add(
+        DailyMetrics(
+            user_id=test_user_id,
+            metric_date=as_of,
+            whoop_recovery_score=70,
+            oura_sleep_duration_min=420,
+        )
+    )
+    await db_session.flush()
+
+    brief = await compute_session_brief(db_session, test_user_id, as_of)
+    assert brief.energy_today is not None
+    assert isinstance(brief.energy_today, EnergyToday)
+
+
+@pytest.mark.asyncio
+async def test_compute_session_brief_energy_today_fails_soft(db_session, test_user_id, monkeypatch):
+    """If compute_energy_today raises, the brief is still returned with energy_today=None
+    rather than the whole session brief blowing up (energy is additive, not critical-path)."""
+    as_of = date(2026, 7, 13)
+    db_session.add(
+        DailyMetrics(
+            user_id=test_user_id,
+            metric_date=as_of,
+            whoop_recovery_score=70,
+            oura_sleep_duration_min=420,
+        )
+    )
+    await db_session.flush()
+
+    async def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(brief_module, "compute_energy_today", _raise)
+
+    brief = await compute_session_brief(db_session, test_user_id, as_of)
+    assert isinstance(brief, SessionBrief)
+    assert brief.energy_today is None
