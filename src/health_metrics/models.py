@@ -350,6 +350,12 @@ class RegulationCache(Base):
     cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
     latest_ingestion_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     latest_write_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Version of the brief schema/logic that produced brief_json. Part of the
+    # freshness check (cache.py): a code bump that changes BRIEF_SCHEMA_VERSION
+    # auto-misses every pre-existing row on the next read -> self-healing on
+    # deploy. server_default '0' so rows written before this column existed are
+    # treated as stale against any real version.
+    brief_schema_version: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'0'"))
 
     __table_args__ = (Index("regulation_cache_cached_at_idx", "cached_at"),)
 
