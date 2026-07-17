@@ -297,9 +297,7 @@ async def _fetch_day_activities(session: AsyncSession, user_id: str, as_of: date
         )
 
     ar = await session.execute(
-        select(
-            ActivityLog.activity_type, ActivityLog.distance_mi, ActivityLog.duration_min
-        ).where(
+        select(ActivityLog.activity_type, ActivityLog.distance_mi, ActivityLog.duration_min).where(
             ActivityLog.user_id == user_id,
             ActivityLog.activity_date == as_of,
         )
@@ -390,9 +388,7 @@ async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date
     _wt_weight = None
     if weight_trend is not None:
         _wt_weight = weight_trend.filtered_weight_lbs or weight_trend.current_lbs
-    energy_today = await compute_energy_today(
-        session, user_id, as_of, weight_lbs=_wt_weight, today=date_type.today()
-    )
+    energy_today = await compute_energy_today(session, user_id, as_of, weight_lbs=_wt_weight, today=date_type.today())
 
     snap = DailySnapshot(
         user_id=user_id,
