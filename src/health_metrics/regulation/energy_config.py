@@ -19,8 +19,14 @@ class EnergyParams:
     divergence_pct: float  # |measured-modeled|/modeled threshold for the flag
 
 
-# SEED constants (pre-calibration). baseline 1.35 = sedentary; walks add on top.
-_DEFAULT = EnergyParams(baseline_activity_factor=1.35, neat_coef=0.53, fallback_rmr_kcal=2000, divergence_pct=0.10)
+# Calibrated 2026-07-17 for Hugo against 30d revealed-TDEE (2691) + Whoop
+# (scripts/calibrate_energy.py). baseline dropped to the 1.30 grid floor because
+# measured Whoop workout kcal is gross and adds on top of the resting-inclusive
+# baseline (a known double-count -- see energy.activity_neat_kcal; gross/net
+# correction is a tracked follow-up, after which re-calibrate). neat_coef=0.20 is
+# the net-of-resting distance constant (~120 kcal for a 2.7mi walk); it only
+# affects distance-only walks (measured-kcal activities ignore it).
+_DEFAULT = EnergyParams(baseline_activity_factor=1.30, neat_coef=0.20, fallback_rmr_kcal=2000, divergence_pct=0.10)
 
 _PARAMS_BY_USER: dict[str, EnergyParams] = {
     "hugo": _DEFAULT,

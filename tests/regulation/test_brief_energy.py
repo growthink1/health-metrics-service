@@ -32,10 +32,8 @@ async def test_energy_today_uses_dexa_rmr_and_activity(db_session, test_user_id)
     assert e is not None
     assert e.rmr_source == "dexa"
     assert e.rmr_kcal == 2036
-    # 2.7mi walk * 220lb * seed neat_coef (0.53) = 314.8 kcal net-of-resting.
-    # (Brief's original range of 110-125 was stale vs. the merged Task 6 formula/coef,
-    # independently asserted at 2.7*220*0.53 in tests/regulation/test_energy.py.)
-    assert 310 <= e.neat_kcal <= 320
+    # 2.7mi walk * 220lb * calibrated neat_coef (0.20) = 118.8 kcal net-of-resting.
+    assert 110 <= e.neat_kcal <= 125
     assert e.tdee_measured_kcal == 2650  # complete day (as_of < today)
 
 
