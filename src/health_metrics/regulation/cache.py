@@ -37,7 +37,8 @@ log = structlog.get_logger()
 #   1 -> §13 regulation_overrides + Item-4 absolute training-water de-watering
 #        (weight_dewatered_lbs always populated). First versioned release.
 #   2 -> Item-6: SessionBrief.energy_today (NEAT/TDEE energy model).
-BRIEF_SCHEMA_VERSION = "2"
+#   3 -> Item-6 calibration: baseline_activity_factor 1.35->1.30, neat_coef 0.53->0.20.
+BRIEF_SCHEMA_VERSION = "3"
 
 
 async def get_latest_ingestion_at(session: AsyncSession, user_id: str) -> datetime | None:
