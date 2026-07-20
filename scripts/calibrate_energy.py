@@ -213,6 +213,13 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--user", default="hugo", help="User id (default: hugo).")
     parser.add_argument("--days", type=int, default=30, help="Trailing window size in days (default: 30).")
+    parser.add_argument(
+        "--min-whoop-kcal",
+        type=int,
+        default=0,
+        help="Exclude complete days whose whoop_kcal_burned is below this floor "
+        "(incomplete strap-wear guard; e.g. RMR*1.2). 0 = keep all.",
+    )
     args = parser.parse_args()
 
     db_url = os.environ.get("DATABASE_URL")
@@ -231,6 +238,17 @@ async def main() -> int:
             contexts, revealed_tdee = await _fetch_history(session, args.user, args.days, base_params.fallback_rmr_kcal)
     finally:
         await engine.dispose()
+
+    if args.min_whoop_kcal > 0:
+        excluded = [
+            c
+            for c in contexts
+            if c.whoop_complete and c.whoop_kcal_burned is not None and c.whoop_kcal_burned < args.min_whoop_kcal
+        ]
+        contexts = [c for c in contexts if c not in excluded]
+        if excluded:
+            days_s = ", ".join(f"{c.day.isoformat()}({c.whoop_kcal_burned})" for c in excluded)
+            print(f"[calib] excluded {len(excluded)} day(s) below whoop floor {args.min_whoop_kcal}: {days_s}")
 
     revealed_s = str(revealed_tdee) if revealed_tdee is not None else "n/a"
     print(f"[calib] window Kalman revealed_tdee: {revealed_s} kcal")
