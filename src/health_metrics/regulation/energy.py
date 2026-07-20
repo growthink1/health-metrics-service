@@ -28,13 +28,16 @@ def dedup_activities(activities: list[Activity]) -> list[Activity]:
     return [a for a in activities if not (a.source_layer == "auto" and a.activity_type in manual_types)]
 
 
-def activity_neat_kcal(a: Activity, weight_lbs: float | None, params: EnergyParams) -> float:
+def activity_neat_kcal(a: Activity, weight_lbs: float | None, params: EnergyParams, rmr_kcal: int) -> float:
     if a.kcal is not None:
-        # Whoop's workouts.kcal is GROSS (in-session resting included); the distance path
-        # below is net-of-resting, so measured-activity days carry a small systematic
-        # in-workout-resting double-count atop RMR*baseline that calibrate_energy.py's
-        # baseline_activity_factor/neat_coef tuning can't fully absorb — flag for calibration.
-        return a.kcal
+        # Whoop's workouts.kcal is GROSS (in-session resting included). The modeled
+        # baseline (rmr * baseline_activity_factor) already covers resting for the whole
+        # day, so subtract the resting expended during the session to avoid double-counting
+        # it. Net-corrected so it matches the distance path (also net-of-resting). Floored
+        # at 0 for low/short sessions where gross < in-workout resting.
+        if a.duration_min is not None:
+            return max(0.0, a.kcal - rmr_kcal / 1440.0 * a.duration_min)
+        return a.kcal  # no duration -> can't net-correct, use gross
     if a.distance_mi is not None and weight_lbs is not None and a.activity_type in ("walk", "run"):
         return a.distance_mi * weight_lbs * params.neat_coef
     if a.duration_min is not None:
@@ -42,8 +45,8 @@ def activity_neat_kcal(a: Activity, weight_lbs: float | None, params: EnergyPara
     return 0.0
 
 
-def neat_kcal(activities: list[Activity], weight_lbs: float | None, params: EnergyParams) -> float:
-    return sum(activity_neat_kcal(a, weight_lbs, params) for a in dedup_activities(activities))
+def neat_kcal(activities: list[Activity], weight_lbs: float | None, params: EnergyParams, rmr_kcal: int) -> float:
+    return sum(activity_neat_kcal(a, weight_lbs, params, rmr_kcal) for a in dedup_activities(activities))
 
 
 def activity_label(a: Activity) -> str:
@@ -65,7 +68,7 @@ def compute_energy(
     params: EnergyParams,
 ) -> EnergyToday:
     deduped = dedup_activities(activities)
-    neat = round(sum(activity_neat_kcal(a, weight_lbs, params) for a in deduped), 1)
+    neat = round(sum(activity_neat_kcal(a, weight_lbs, params, rmr_kcal) for a in deduped), 1)
     baseline = round(rmr_kcal * params.baseline_activity_factor)
     modeled = baseline + round(neat)
     measured = whoop_kcal_burned if whoop_complete else None
