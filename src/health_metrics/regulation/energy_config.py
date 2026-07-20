@@ -19,14 +19,16 @@ class EnergyParams:
     divergence_pct: float  # |measured-modeled|/modeled threshold for the flag
 
 
-# Calibrated 2026-07-17 for Hugo against 30d revealed-TDEE (2691) + Whoop
-# (scripts/calibrate_energy.py). baseline dropped to the 1.30 grid floor because
-# measured Whoop workout kcal is gross and adds on top of the resting-inclusive
-# baseline (a known double-count -- see energy.activity_neat_kcal; gross/net
-# correction is a tracked follow-up, after which re-calibrate). neat_coef=0.20 is
-# the net-of-resting distance constant (~120 kcal for a 2.7mi walk); it only
-# affects distance-only walks (measured-kcal activities ignore it).
-_DEFAULT = EnergyParams(baseline_activity_factor=1.30, neat_coef=0.20, fallback_rmr_kcal=2000, divergence_pct=0.10)
+# Calibrated 2026-07-20 for Hugo against 14d revealed-TDEE (~2938) + Whoop
+# (scripts/calibrate_energy.py), AFTER the gross/net fix in energy.activity_neat_kcal
+# (measured Whoop workout kcal is now net-of-in-session-resting). With the double-count
+# removed, baseline comes off the old 1.30 floor to 1.40: net-corrected modeled TDEE then
+# tracks Whoop to ~1% on active days and ~3% on rest days, and lands within ~3% of the
+# revealed anchor. The 30d window still favors 1.30 but is dragged by two incomplete-wear
+# low-Whoop days (Jul 5 / Jul 19); the 14d window reflects current state. neat_coef=0.20 is
+# the net-of-resting distance constant (~120 kcal for a 2.7mi walk); it only affects
+# distance-only walks (measured-kcal activities are net-corrected directly, not via coef).
+_DEFAULT = EnergyParams(baseline_activity_factor=1.40, neat_coef=0.20, fallback_rmr_kcal=2000, divergence_pct=0.10)
 
 _PARAMS_BY_USER: dict[str, EnergyParams] = {
     "hugo": _DEFAULT,
