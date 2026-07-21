@@ -1,7 +1,8 @@
 """Whoop developer v2 client with OAuth refresh-token rotation."""
 
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import httpx
 import structlog
@@ -9,6 +10,15 @@ import structlog
 from .base import WhoopDayPayload, WhoopWorkout
 
 log = structlog.get_logger()
+
+
+class WhoopAuthError(Exception):
+    """Whoop OAuth token refresh failed (e.g. invalid_grant / revoked refresh token).
+
+    Distinct from httpx.HTTPStatusError so it is NOT swallowed by fetch_day's
+    per-endpoint error handling — it propagates so the ingest can record an
+    'auth_error' status instead of a misleading 'ok' with empty data.
+    """
 
 
 # Whoop sport_id → human label (small subset; expand as needed)
@@ -96,12 +106,13 @@ class WhoopClient:
             "client_secret": self._client_secret,
         }
         resp = await self._http.post(self._oauth_url, data=data)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise WhoopAuthError(f"whoop token refresh failed: {resp.status_code} {resp.text[:200]}")
         body = resp.json()
         self._access_token = body["access_token"]
         self._refresh_token = body.get("refresh_token", self._refresh_token)
         expires_in = int(body.get("expires_in", 3600))
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
         log.info("whoop_token_refreshed", expires_at=expires_at.isoformat())
         if self._on_token_refresh:
             await self._on_token_refresh(self._access_token, self._refresh_token, expires_at)

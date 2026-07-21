@@ -433,11 +433,16 @@ async def compute_session_brief(session: AsyncSession, user_id: str, as_of: date
             )
         )
     if not snap.whoop_present_today:
+        whoop_status = today_row.whoop_status if today_row is not None else None
+        if whoop_status in ("auth_error", "failed"):
+            whoop_msg = f"Whoop sync failed ({whoop_status}) — the OAuth token likely needs re-authorization"
+        else:
+            whoop_msg = "Whoop strap data missing for today"
         missing.append(
             MissingInput(
                 field="whoop_today",
                 impact="confidence_degrades",
-                message="Whoop strap data missing for today",
+                message=whoop_msg,
             )
         )
     if snap.history_days_count < 14:

@@ -209,3 +209,25 @@ async def test_compute_session_brief_ignores_revoked_override(db_session, test_u
     brief = await compute_session_brief(db_session, test_user_id, as_of)
     assert brief.regulation_call.applied_overrides == []
     assert brief.regulation_call.kcal_target != 2500
+
+
+@pytest.mark.asyncio
+async def test_compute_session_brief_flags_whoop_auth_error(db_session, test_user_id):
+    """When whoop_status is an auth error, the whoop missing-input must prompt
+    re-authorization rather than just reporting data as 'missing'."""
+    as_of = date(2026, 7, 21)
+    db_session.add(
+        DailyMetrics(
+            user_id=test_user_id,
+            metric_date=as_of,
+            whoop_recovery_score=None,  # whoop absent -> triggers the missing-input
+            whoop_status="auth_error",
+            oura_sleep_duration_min=420,
+        )
+    )
+    await db_session.flush()
+
+    brief = await compute_session_brief(db_session, test_user_id, as_of)
+    whoop_mi = [m for m in brief.missing_inputs if m.field == "whoop_today"]
+    assert len(whoop_mi) == 1
+    assert "re-auth" in whoop_mi[0].message.lower()

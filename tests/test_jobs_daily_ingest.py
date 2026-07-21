@@ -152,3 +152,59 @@ async def test_ingest_is_idempotent_for_same_date(db_session, test_user_id):
     )
     workouts_db = res.scalars().all()
     assert len(workouts_db) == 1
+
+
+@pytest.mark.asyncio
+async def test_whoop_auth_error_sets_auth_error_status(db_session, test_user_id):
+    """A WhoopAuthError during fetch must record whoop_status='auth_error', not 'ok'."""
+    from health_metrics.sources.whoop import WhoopAuthError
+
+    whoop_mock = AsyncMock()
+    whoop_mock.fetch_day.side_effect = WhoopAuthError("invalid_grant")
+    whoop_mock.close = AsyncMock()
+
+    with patch("health_metrics.jobs.daily_ingest._build_whoop_client", new=AsyncMock(return_value=whoop_mock)), \
+         patch("health_metrics.jobs.daily_ingest._build_oura_client", return_value=None):
+        result = await run_daily_ingest(day=date(2026, 7, 20), user_id=test_user_id, session=db_session, commit=False)
+
+    assert result["whoop_status"] == "auth_error"
+    r = await db_session.execute(
+        select(DailyMetrics).where(DailyMetrics.user_id == test_user_id, DailyMetrics.metric_date == date(2026, 7, 20))
+    )
+    assert r.scalar_one().whoop_status == "auth_error"
+
+
+@pytest.mark.asyncio
+async def test_ingest_invalidates_todays_cache(db_session, test_user_id):
+    """run_daily_ingest must bust today's regulation_cache so a fresh ingest (via any
+    path — scheduled OR the manual /ingest/daily trigger) doesn't serve a stale brief."""
+    from datetime import UTC, datetime
+
+    from health_metrics.models import RegulationCache
+
+    db_session.add(
+        RegulationCache(
+            user_id=test_user_id,
+            as_of_date=date.today(),
+            brief_json={"stale": True},
+            latest_ingestion_at=datetime(2026, 7, 20, tzinfo=UTC),
+            latest_write_at=datetime(2026, 7, 20, tzinfo=UTC),
+        )
+    )
+    await db_session.flush()
+
+    payload, workouts = _whoop_payload_and_workouts()
+    whoop_mock = AsyncMock()
+    whoop_mock.fetch_day.return_value = (payload, workouts)
+    whoop_mock.close = AsyncMock()
+
+    with patch("health_metrics.jobs.daily_ingest._build_whoop_client", new=AsyncMock(return_value=whoop_mock)), \
+         patch("health_metrics.jobs.daily_ingest._build_oura_client", return_value=None):
+        await run_daily_ingest(day=date(2026, 5, 12), user_id=test_user_id, session=db_session, commit=False)
+
+    r = await db_session.execute(
+        select(RegulationCache).where(
+            RegulationCache.user_id == test_user_id, RegulationCache.as_of_date == date.today()
+        )
+    )
+    assert r.scalar_one_or_none() is None
