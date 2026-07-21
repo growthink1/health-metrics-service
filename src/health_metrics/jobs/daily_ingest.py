@@ -1,6 +1,6 @@
 """Daily ingest job — fetches Oura + Whoop for a single date and upserts to DB."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..models import DailyMetrics, OAuthState, Workout
+from ..regulation.cache import invalidate_cache
 from ..sources.oura import OuraClient
-from ..sources.whoop import WhoopClient
+from ..sources.whoop import WhoopAuthError, WhoopClient
 from ..transforms.normalize import build_daily_metrics_row
 from ..transforms.zscore import compute_zscore
 
@@ -118,6 +119,12 @@ async def run_daily_ingest(
         try:
             whoop_payload, whoop_workouts = await whoop_client.fetch_day(day)
             whoop_status = "ok"
+        except WhoopAuthError as e:
+            # Token refresh failed (e.g. revoked/expired refresh token). Record a
+            # distinct status + log at error level so it is not silently masked as
+            # 'ok' with empty data — the brief surfaces this as a re-auth prompt.
+            log.error("whoop_auth_failed", day=day.isoformat(), error=str(e))
+            whoop_status = "auth_error"
         except Exception as e:
             log.warning("whoop_fetch_failed", day=day.isoformat(), error=str(e))
             whoop_status = "failed"
@@ -186,6 +193,11 @@ async def run_daily_ingest(
         await session.execute(stmt)
 
     await _recompute_zscores(session, user_id=user_id, anchor_day=day)
+
+    # Bust today's brief cache so a fresh ingest — via the scheduler OR the manual
+    # /ingest/daily trigger — never leaves a stale session-brief. Pre-commit so it
+    # rides the same transaction and respects the commit flag.
+    await invalidate_cache(session, user_id, date.today())
 
     if commit:
         await session.commit()

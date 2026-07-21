@@ -165,3 +165,26 @@ async def test_whoop_partial_failure_recovers_remaining_endpoints():
     # Sleep/workout empty (not failed) → all None
     assert day_payload.sleep_performance is None
     assert len(workouts) == 0
+
+
+@respx.mock
+async def test_whoop_refresh_failure_raises_auth_error():
+    """A failed token refresh (invalid_grant) must raise WhoopAuthError rather than
+    being swallowed as empty data — so the ingest can mark whoop_status='auth_error'
+    instead of a misleading 'ok'."""
+    from health_metrics.sources.whoop import WhoopAuthError
+
+    # Empty access token forces a refresh on the first call; the token endpoint
+    # rejects the (dead) refresh token.
+    respx.post("https://api.prod.whoop.com/oauth/oauth2/token").mock(
+        return_value=httpx.Response(400, json={"error": "invalid_grant"})
+    )
+    client = WhoopClient(
+        access_token="",
+        refresh_token="dead-refresh",
+        client_id="cid",
+        client_secret="csec",
+    )
+    with pytest.raises(WhoopAuthError):
+        await client.fetch_day(date(2026, 7, 20))
+    await client.close()
